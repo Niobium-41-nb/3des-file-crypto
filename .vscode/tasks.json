@@ -90,6 +90,53 @@
                 "cwd": "${workspaceFolder}"
             },
             "problemMatcher": []
+        },
+        {
+            "label": "3DES: 编译 tdes_gui.exe (图形界面)",
+            "type": "shell",
+            "command": "g++",
+            "args": [
+                "-std=c++17",
+                "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Iinclude",
+                "-mwindows",
+                "-static",
+                "-static-libgcc",
+                "-static-libstdc++",
+                "-o",
+                "tdes_gui.exe",
+                "src/gui.cpp",
+                "src/des.cpp",
+                "src/tdes.cpp",
+                "-lcomdlg32"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            "label": "3DES: 图形界面端到端测试",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "tools/gui_smoke.ps1"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOn": [
+                "3DES: 编译 tdes_gui.exe (图形界面)"
+            ],
+            "problemMatcher": []
         }
     ]
 }
