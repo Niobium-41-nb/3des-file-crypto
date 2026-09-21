@@ -256,6 +256,94 @@ void testIntegrity() {
           decOk2 ? "解密未报错，但明文已乱码（CBC 无完整性保护）" : "已被填充校验拒绝");
 }
 
+// S 盒的“行列拆分规则”与标准取值（教材有两处误值）
+void testSBox() {
+    // ① 行列规则：以 S1 输入 1-0110-0（二进制 101100 = 0x2C）为例
+    //    首末两位 10 → 第 3 行（下标 2）；中间四位 0110 → 第 7 列（下标 6）
+    int row = -1, col = -1;
+    des::sboxIndex(0x2C, row, col);
+    check(row == 2 && col == 6, "S 盒行列拆分规则",
+          "输入 1-0110-0 → 行 10(第 3 行)、列 0110(第 7 列)");
+
+    // ② 据该行列查 S1 盒应得 2，即 4 位输出 0010
+    const int v = des::sboxValue(0, row, col);
+    check(v == 2, "S1(1-0110-0) 输出 0010", "值 = " + std::to_string(v));
+
+    // ③ 穷举全部 64 种 6 位输入，行号必须总在 0~3、列号总在 0~15
+    bool allOk = true;
+    for (int bits = 0; bits < 64 && allOk; ++bits) {
+        int r = -1, c = -1;
+        des::sboxIndex(bits, r, c);
+        if (r < 0 || r > 3 || c < 0 || c > 15) allOk = false;
+    }
+    check(allOk, "64 种 6 位输入的行列均合法", "行 0~3、列 0~15 均在表格范围内");
+
+    // ④ 教材两处误值的核对：本实现采用 FIPS 46-3 标准值
+    const int s1 = des::sboxValue(0, 1, 4);  // S1 第 2 行第 5 列
+    const int s4 = des::sboxValue(3, 1, 0);  // S4 第 2 行第 1 列
+    check(s1 == 14, "S1 第2行第5列 = 14", "本实现 " + std::to_string(s1) + "（教材误作 15）");
+    check(s4 == 13, "S4 第2行第1列 = 13", "本实现 " + std::to_string(s4) + "（教材误作 12）");
+}
+
+// 课程材料“密钥 / 明文 / 密文”表格向量（单 DES、ECB、无填充）
+void testCourseTable() {
+    struct Row {
+        const char* k;
+        const char* p;
+        const char* c;
+    };
+    // 表中第 6 行的明文原写作 546987321456045（只有 15 位十六进制，少 1 位），
+    // 用“逐位插入 0~F 反推”得到唯一候选 5469875321456045（少的是第 7 位的 5），
+    // 修正后与表中密文 6B866C00D337CAA8 完全吻合。
+    static const Row ROWS[] = {
+        {"0000000000000000", "0000000000000000", "8CA64DE9C1B123A7"},
+        {"1111111111111111", "1111111111111111", "F40379AB9E0EC533"},
+        {"1234123412341234", "1234123412341234", "CE93C61D8D78E6FA"},
+        {"4567456745674567", "4567456745674567", "73874878EEE078FB"},
+        {"1234567891234567", "9876543211472583", "7CAEEC024AE1ADCB"},
+        {"5987423651456987", "5469875321456045", "6B866C00D337CAA8"},
+    };
+    const int n = (int)(sizeof(ROWS) / sizeof(ROWS[0]));
+    bool allBack = true;
+    for (int i = 0; i < n; ++i) {
+        std::string err;
+        std::vector<std::uint8_t> key;
+        std::uint8_t pt[8], out[8], back[8];
+        parseKeyHex(ROWS[i].k, Alg::DES, key, err);
+        parseHexBytes(ROWS[i].p, pt, 8);
+        const std::vector<des::SubKeys> ks = buildSubKeys(key, Alg::DES);
+        encryptBlock(pt, out, ks, Alg::DES);
+        const std::string got = toHex(out, 8);
+        check(got == ROWS[i].c, "表格向量 " + std::to_string(i + 1) + "/" + std::to_string(n),
+              std::string("K=") + ROWS[i].k + " P=" + ROWS[i].p + " -> " + got);
+        decryptBlock(out, back, ks, Alg::DES);
+        if (toHex(back, 8) != ROWS[i].p) allBack = false;
+    }
+    check(allBack, "表格向量反向解密全部正确", "6 组密文均可解回原明文");
+}
+
+// DES 的弱密钥：K = 0 时加密是自逆的，即 E(E(P)) = P
+void testWeakKey() {
+    std::string err;
+    std::vector<std::uint8_t> key;
+    std::uint8_t pt[8], t1[8], t2[8];
+    parseHexBytes("0123456789ABCDEF", pt, 8);
+
+    parseKeyHex("0000000000000000", Alg::DES, key, err);
+    const std::vector<des::SubKeys> ksWeak = buildSubKeys(key, Alg::DES);
+    encryptBlock(pt, t1, ksWeak, Alg::DES);
+    encryptBlock(t1, t2, ksWeak, Alg::DES);
+    check(std::memcmp(pt, t2, 8) == 0, "弱密钥 K=0 满足 E(E(P))=P",
+          "E(P)=" + toHex(t1, 8) + "，再加密即回到明文");
+
+    parseKeyHex("133457799BBCDFF1", Alg::DES, key, err);
+    const std::vector<des::SubKeys> ksNormal = buildSubKeys(key, Alg::DES);
+    encryptBlock(pt, t1, ksNormal, Alg::DES);
+    encryptBlock(t1, t2, ksNormal, Alg::DES);
+    check(std::memcmp(pt, t2, 8) != 0, "普通密钥不满足 E(E(P))=P",
+          "对照组 K=133457799BBCDFF1");
+}
+
 }  // namespace
 
 int selfTest(bool verbose) {
@@ -270,6 +358,9 @@ int selfTest(bool verbose) {
     testRoundTrip();
     testModeProperties();
     testIntegrity();
+    testSBox();
+    testCourseTable();
+    testWeakKey();
     std::printf("-------------------------------------------\n");
     std::printf("用例总数 %d，通过 %d，失败 %d\n", g_pass + g_fail, g_pass, g_fail);
     return g_fail;

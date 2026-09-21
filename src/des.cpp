@@ -81,7 +81,14 @@ static const int PC2[48] = {
 // 16 轮中每轮 C/D 的循环左移位数
 static const int SHIFTS[16] = {1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1};
 
-// 8 个 S 盒：每盒 4 行 x 16 列；行号 = 6 位输入的首末两位，列号 = 中间 4 位
+// 8 个 S 盒：每盒 4 行 x 16 列
+//   行号 = 6 位输入的“首末两位”（第 1 位为高位）：00→第 1 行、01→第 2 行、10→第 3 行、11→第 4 行
+//   列号 = 中间 4 位：0000→第 1 列、0001→第 2 列、…、1111→第 16 列
+//   例：S1 输入 1-0110-0 → 行 10（第 3 行）、列 0110（第 7 列），查得 2（即 0010）
+// 注意：教材表格中有两处印错，本实现一律采用 FIPS 46-3 标准值——
+//   S1 第 2 行第 5 列：教材印作 15，标准为 14
+//   S4 第 2 行第 1 列：教材印作 12，标准为 13
+// 若照抄教材错误值，标准向量会立刻不匹配（自检用例“S1 第2行第5列为 14”等会失败）。
 static const int SBOX[8][64] = {
     // S1
     {14,  4, 13,  1,  2, 15, 11,  8,  3, 10,  6, 12,  5,  9,  0,  7,
@@ -146,12 +153,16 @@ u64 feistel(u32 r, u64 subKey) {
     u64 x = ex ^ subKey;             // 2) 与 48 位子密钥按位异或
     u32 s = 0;
     for (int i = 0; i < 8; ++i) {  // 3) 8 个 S 盒并行代换：48 -> 32
-        int six = (int)((x >> (42 - 6 * i)) & 0x3F);  // 取出第 i 组 6 位输入
-        int row = ((six & 0x20) >> 4) | (six & 0x01);  // 首末两位 -> 行号
-        int col = (six >> 1) & 0x0F;                   // 中间四位 -> 列号
+        int row = 0, col = 0;
+        sboxIndex((int)((x >> (42 - 6 * i)) & 0x3F), row, col);  // 首末两位->行，中间四位->列
         s = (s << 4) | (u32)SBOX[i][row * 16 + col];
     }
     return permute(s, P, 32, 32);  // 4) P 置换：32 -> 32
+}
+
+int sboxValue(int box, int row, int col) {
+    if (box < 0 || box > 7 || row < 0 || row > 3 || col < 0 || col > 15) return -1;
+    return SBOX[box][row * 16 + col];
 }
 
 u64 bytesToU64(const std::uint8_t b[BLOCK_SIZE]) {
@@ -196,6 +207,8 @@ static void cryptBlock(const std::uint8_t in[BLOCK_SIZE], std::uint8_t out[BLOCK
         l = nl;
         r = nr;
     }
+    // 16 轮结束后必须先交换左右半区：逆初始置换的输入是 R16||L16，
+    // 而不是 L16||R16；漏掉这一步会使结果完全错误（这一点常被忽略）。
     u64 pre = ((u64)r << 32) | l;               // 预输出 R16||L16（左右交换）
     u64 res = permute(pre, IP_INV, 64, 64);     // 逆初始置换
     u64ToBytes(res, out);

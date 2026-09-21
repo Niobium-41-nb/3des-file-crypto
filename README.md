@@ -12,7 +12,7 @@
 | 文件类型 | 任意二进制文件；支持中文文件名与中文路径                                       |
 | 文件头   | 22 字节自描述头：魔数`TDS1` + 算法 + 模式 + IV + 明文原始长度                |
 | 互操作   | `--raw` 模式可输出/读取不含文件头的裸密文，已与 .NET `TripleDES` 双向互解  |
-| 自检     | `tdes selftest` 内置 25 个用例（含 12 个标准向量 KAT）                       |
+| 自检     | `tdes selftest` 内置 39 个用例（12 组标准向量 KAT + 6 组课程表格向量 + S 盒规则 + 弱密钥等）                       |
 | 图形界面 | `tdes_gui.exe`：纯 Win32 API 窗口界面，选文件/密钥/算法/模式后一键加解密，支持拖放与高分屏 |
 | 实现约束 | 纯 C++17 标准库，不调用 OpenSSL / CryptoAPI 等任何现成密码库                   |
 
@@ -34,6 +34,7 @@
 ├── tools/
 │   ├── dotnet_vectors.ps1   用 .NET 计算标准向量（第三方参照值）
 │   ├── crosscheck.ps1       与 .NET DES/TripleDES 的交叉验证
+│   ├── textbook_table.ps1   课程表格 6 组向量的三方（本程序 / .NET / 表格）比对
 │   ├── gui_smoke.ps1        图形界面端到端测试（脚本驱动控件，无需手工点击）
 │   └── gui_shot.ps1         仅截取本程序窗口的截图工具（不抓整个桌面）
 ├── demo/                演示用文件（明文 / 密文 / 还原结果）
@@ -157,13 +158,29 @@ tdes dec <密文文件> <明文文件> -k <HEX> [选项]   解密文件
 ## 6. 测试
 
 ```powershell
-.\tdes.exe selftest        # 25 个用例：12 个标准向量 KAT + 13 个性质/边界用例
+.\tdes.exe selftest        # 39 个用例：12 组标准向量 KAT + 6 组课程表格向量 + S 盒/弱密钥等
 .\test_kat.exe             # 52 个用例：文件级往返 + 错误注入 + 性能测试
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\crosscheck.ps1   # 与 .NET 交叉验证 16 项
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\crosscheck.ps1      # 与 .NET 交叉验证 16 项
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\textbook_table.ps1  # 课程表格 6 组三方比对
 ```
 
 标准向量来自教材经典向量与 .NET `System.Security.Cryptography`（DES / TripleDES，ECB，无填充），
-两者与本程序输出完全一致。
+两者与本程序输出完全一致。另外 `tools\textbook_table.ps1` 对课程材料中的 6 组
+“密钥 / 明文 / 密文”做三方比对（本程序 = .NET = 表格，6/6 一致）。
+
+### 关于教材 S 盒的两处印错
+
+本实现一律采用 FIPS 46-3 标准值：
+
+| 位置 | 教材印作 | 标准值（本实现） |
+| --- | --- | --- |
+| S1 盒第 2 行第 5 列 | 15 | **14** |
+| S4 盒第 2 行第 1 列 | 12 | **13** |
+
+S 盒的行列约定：6 位输入的**首末两位**拼成行号（00→第 1 行、01→第 2 行、10→第 3 行、11→第 4 行），
+**中间四位**作列号（0000→第 1 列，0001→第 2 列，…）。例如 S1 输入 `1-0110-0`：
+首末位 `10` → 第 3 行，中间 `0110` → 第 7 列，查表得 `2`（即输出 0010）。
+若照抄教材的这两处误值，标准向量会立刻不匹配（`tdes selftest` 中对应的用例会失败）。
 
 ## 7. 安全说明（本程序为教学实现）
 

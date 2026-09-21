@@ -40,6 +40,21 @@ u64 rotateLeft28(u64 v, int n);
 // 轮函数 f(R, K)：E 扩展 -> 与子密钥异或 -> S 盒代换 -> P 置换
 u64 feistel(u32 r, u64 subKey);
 
+// 把 S 盒的 6 位输入拆成行号与列号（均从 0 开始计数，直接作为表格下标）：
+//   行号 = 第 1 位与第 6 位拼成的 2 位二进制
+//          00→第 1 行、01→第 2 行、10→第 3 行、11→第 4 行
+//   列号 = 中间 4 位组成的二进制数
+//          0000→第 1 列、0001→第 2 列、…、1111→第 16 列
+// 例：输入 1-0110-0（即二进制 101100，0x2C）→ 行 10（第 3 行 idx=2）、列 0110（第 7 列 idx=6）
+inline void sboxIndex(int sixBits, int& row, int& col) {
+    row = ((sixBits & 0x20) >> 4) | (sixBits & 0x01);
+    col = (sixBits >> 1) & 0x0F;
+}
+
+// 查询 S 盒取值（仅供教学与测试）：box 0..7 对应 S1..S8，row 0..3，col 0..15
+// 越界返回 -1。用于核对“教材两处误值”等细节，不参与加密主流程。
+int sboxValue(int box, int row, int col);
+
 // 大端字节序与 64 位整数之间的转换（DES 以比特串为准，故统一用大端解读）
 u64 bytesToU64(const std::uint8_t b[BLOCK_SIZE]);
 void u64ToBytes(u64 v, std::uint8_t b[BLOCK_SIZE]);
