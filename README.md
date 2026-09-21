@@ -215,8 +215,8 @@ S 盒的行列约定：6 位输入的**首末两位**拼成行号（00→第 1 �
 
 | 下载文件 | 说明 |
 | --- | --- |
-| `3DES-FileCrypto-1.1.0-win64-setup.exe` | Windows 64 位**安装程序**（Inno Setup 制作，中文向导） |
-| `3DES-FileCrypto-1.1.0-win64-portable.zip` | **免安装便携版**，解压即用 |
+| `3DES-FileCrypto-1.2.0-win64-setup.exe` | Windows 64 位**安装程序**（Inno Setup 制作，中文向导） |
+| `3DES-FileCrypto-1.2.0-win64-portable.zip` | **免安装便携版**，解压即用 |
 | `SHA256SUMS.txt` | 上述文件的 SHA-256 校验值 |
 
 > 文件名中的版本号以发行版页面上的最新版为准
@@ -231,7 +231,7 @@ S 盒的行列约定：6 位输入的**首末两位**拼成行号（00→第 1 �
 
 ```powershell
 # 静默安装到指定目录（不加 PATH、不建桌面图标）
-.\3DES-FileCrypto-1.1.0-win64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART `
+.\3DES-FileCrypto-1.2.0-win64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART `
     /DIR="C:\Tools\3DES" /MERGETASKS="!addtopath,!desktopicon"
 # 静默卸载
 "C:\Tools\3DES\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
