@@ -38,6 +38,11 @@
 #include <string>
 #include <vector>
 
+// 应用程序图标资源 ID（与 assets/app.rc 保持一致）
+#ifndef IDI_APPICON
+#define IDI_APPICON 101
+#endif
+
 namespace {
 
 // ------------------------------ 控件 ID ------------------------------
@@ -708,8 +713,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR lpCmdLine, int nC
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     wc.lpszClassName = L"TdesGuiWindow";
-    wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    wc.hIconSm = wc.hIcon;
+    // 窗口/任务栏图标取自 exe 内嵌的图标资源；若资源缺失则退回系统默认图标
+    wc.hIcon = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_APPICON));
+    if (!wc.hIcon) wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIconSm = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
+                                   GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
+                                   LR_DEFAULTCOLOR);
+    if (!wc.hIconSm) wc.hIconSm = wc.hIcon;
     if (!RegisterClassExW(&wc)) return 1;
 
     RECT r{0, 0, S(620), S(520)};

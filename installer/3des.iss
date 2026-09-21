@@ -59,6 +59,8 @@ ChangesEnvironment=yes
 CloseApplications=yes
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
 UninstallDisplayIcon={app}\{#MyAppExeName}
+; 安装程序自身的图标与卸载列表中的图标都用同一枚（来自 assets/icon.ico）
+SetupIconFile={#ProjectRoot}\assets\icon.ico
 VersionInfoVersion={#MyAppVersion}
 VersionInfoProductName={#MyAppName}
 VersionInfoProductVersion={#MyAppVersion}
@@ -81,7 +83,7 @@ Source: "{#ProjectRoot}\README.md";    DestDir: "{app}"; Flags: ignoreversion is
 
 [Icons]
 Name: "{group}\{#MyAppName}（图形界面）"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
-Name: "{group}\{#MyAppName}（命令行）";   Filename: "{cmd}"; Parameters: "/k ""{app}\{#MyCliExeName} help"""; WorkingDir: "{app}"; Comment: "打开命令行并显示用法"
+Name: "{group}\{#MyAppName}（命令行）";   Filename: "{cmd}"; Parameters: "/k ""{app}\{#MyCliExeName} help"""; WorkingDir: "{app}"; IconFilename: "{app}\{#MyCliExeName}"; Comment: "打开命令行并显示用法"
 Name: "{group}\卸载 {#MyAppName}";        Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}";       Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 

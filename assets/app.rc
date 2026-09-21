@@ -1,0 +1,58 @@
+// ============================================================================
+//  app.rc —— Windows 资源脚本：应用程序图标 + 版本信息
+//  ---------------------------------------------------------------------------
+//  编译（由 Makefile 自动完成）：
+//    windres --codepage=65001 -i assets/app.rc -o assets/app_res.o
+//    然后与源码一起链接：g++ ... assets/app_res.o -o tdes_gui.exe
+//
+//  要点：
+//    * 本文件以 UTF-8 保存，必须用 --codepage=65001 编译，中文才能正确写入资源；
+//    * 两个 exe（tdes.exe / tdes_gui.exe）共用本资源，图标 ID 固定为 101，
+//      与 src/gui.cpp 里的 IDI_APPICON 保持一致；
+//    * 版本号时请同步修改下面的 _VER_* 默认值（也可以在命令行用 -D 覆盖）。
+// ============================================================================
+
+#ifndef _VER_NUM
+  #define _VER_NUM 1,2,0,0        // FILEVERSION / PRODUCTVERSION（四段数字）
+#endif
+#ifndef _VER_STR
+  #define _VER_STR "1.2.0"        // 字符串形式的版本号
+#endif
+
+#define IDI_APPICON 101
+
+IDI_APPICON ICON "icon.ico"
+
+/* 版本资源的 ID 必须是 1：Windows 的版本 API（GetFileVersionInfo）只认 ID 为 1 的
+   RT_VERSION；若写成 VS_VERSION_INFO VERSIONINFO，windres 会将它当作字符串名字，
+   资源管理器与 GetFileVersionInfo 都会读不到版本信息。 */
+1 VERSIONINFO
+ FILEVERSION    _VER_NUM
+ PRODUCTVERSION _VER_NUM
+ FILEFLAGSMASK  0x3fL
+ FILEFLAGS      0x0L
+ FILEOS         0x40004L          // VOS_NT_WINDOWS32
+ FILETYPE       0x1L              // VFT_APP
+ FILESUBTYPE    0x0L
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    /* 标准英文(美国) + Unicode 块标识；各字符串本身仍是 UTF-16，
+       中文内容不受影响，这样 Windows 版本 API 与资源管理器都能正确读取 */
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName",     "张可凡 (Niobium-41-nb)"
+      VALUE "FileDescription", "3DES 任意文件加解密工具"
+      VALUE "FileVersion",     _VER_STR
+      VALUE "InternalName",    "3des-file-crypto"
+      VALUE "LegalCopyright",  "Copyright (C) 2026 张可凡"
+      VALUE "ProductName",     "3DES 文件加解密"
+      VALUE "ProductVersion",  _VER_STR
+      VALUE "Comments",        "信息安全课程实验：手写 DES/3DES（EDE）+ CBC/ECB，不依赖任何现成密码库"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

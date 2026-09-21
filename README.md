@@ -1,5 +1,7 @@
 # 3DES 文件加解密小软件
 
+<p><img src="assets/icon-256.png" width="96" alt="应用图标"></p>
+
 信息安全实验：手写实现 DES / 三重 DES 算法，并对**任意文件**（文本、二进制、中文文件名均可）进行加解密。
 
 ## 1. 功能特点
@@ -37,8 +39,11 @@
 │   ├── textbook_table.ps1   课程表格 6 组向量的三方（本程序 / .NET / 表格）比对
 │   ├── gui_smoke.ps1        图形界面端到端测试（脚本驱动控件，无需手工点击）
 │   ├── gui_shot.ps1         仅截取本程序窗口的截图工具（不抓整个桌面）
-│   └── shot_installer.ps1   仅截取安装向导窗口的截图工具（用于核对中文界面）
-├── installer/
+│   └── shot_installer.ps1   仅截取安装向导窗口的截图工具（用于核对中文界面）│   └── make_icon.py         程序图标生成脚本（Pillow 绘制，输出到 assets/）
+├── assets/
+│   ├── icon.ico             应用程序图标（16~256 多尺寸，含透明通道）
+│   ├── icon-256.png         图标主图（文档/预览用）
+│   └── app.rc               Windows 资源：图标 + 版本信息（windres 编译后链进 exe）├── installer/
 │   ├── 3des.iss             Inno Setup 安装脚本（中文向导 / 免管理员 / 可加入 PATH）
 │   ├── ChineseSimplified.isl 安装向导简体中文语言文件（取自 Inno Setup 官方仓库）
 │   ├── build-installer.ps1  一键打包：编译二进制 + 生成安装包 + 便携版 zip + SHA256 清单
@@ -58,6 +63,7 @@
 ```powershell
 mingw32-make            # 编译命令行工具 tdes.exe 与图形界面 tdes_gui.exe
 mingw32-make gui        # 只编译图形界面
+mingw32-make icon       # 重新生成程序图标（需 Python + Pillow）
 mingw32-make test       # 编译并运行全部测试
 mingw32-make gui-test   # 运行图形界面端到端测试
 ```
@@ -154,6 +160,7 @@ tdes dec <密文文件> <明文文件> -k <HEX> [选项]   解密文件
 | 解密参数 | 只需密钥：算法、模式、IV 都记录在密文文件头里，会自动读取 |
 | 错误提示 | 密钥不对（PKCS#7 校验失败）会弹错误框并在日志中记录原因 |
 | 高分屏 | 界面按系统 DPI 自动缩放（100%/150%/200% 均清晰） |
+| 图标 | 窗口/任务栏/资源管理器使用同一枚图标，由 `assets/icon.ico`（多尺寸 16~256）提供，`tools/make_icon.py` 可重新生成；exe 同时带版本信息（产品名/版本/版权） |
 | 依赖 | 只用 Win32 API（user32/gdi32/comdlg32/shell32），无任何第三方 GUI 库 |
 
 ## 5. 密文文件格式（非 raw 模式）
