@@ -1,0 +1,95 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "3DES: 编译 tdes.exe",
+            "type": "shell",
+            "command": "g++",
+            "args": [
+                "-std=c++17",
+                "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Iinclude",
+                "-static",
+                "-static-libgcc",
+                "-static-libstdc++",
+                "-o",
+                "tdes.exe",
+                "src/des.cpp",
+                "src/tdes.cpp",
+                "src/selftest.cpp",
+                "src/main.cpp"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            "label": "3DES: 运行内置自检",
+            "type": "shell",
+            "command": ".\\tdes.exe",
+            "args": [
+                "selftest"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOn": [
+                "3DES: 编译 tdes.exe"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "3DES: 编译并运行全部测试",
+            "type": "shell",
+            "command": "g++",
+            "args": [
+                "-std=c++17",
+                "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Iinclude",
+                "-static",
+                "-static-libgcc",
+                "-static-libstdc++",
+                "-o",
+                "test_kat.exe",
+                "tests/test_kat.cpp",
+                "src/des.cpp",
+                "src/tdes.cpp",
+                "src/selftest.cpp"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "test",
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            "label": "3DES: 与 .NET 实现交叉验证",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "tools/crosscheck.ps1"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        }
+    ]
+}

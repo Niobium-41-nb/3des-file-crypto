@@ -1,0 +1,22 @@
+# 编译产物
+*.exe
+*.o
+*.obj
+*.d
+*.stackdump
+*.ilk
+*.pdb
+
+# 加密演示/测试数据（体积大或可随时重新生成）
+demo/*
+!demo/信息明文.txt
+
+# 实验报告（按要求不纳入仓库）
+report/
+
+# 编辑器与系统文件
+.vs/
+.vscode/ipch/
+*.user
+Thumbs.db
+Desktop.ini
