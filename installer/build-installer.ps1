@@ -63,6 +63,13 @@ Write-Host "==> Inno Setup   : $iscc"
 
 New-Item -ItemType Directory -Force $dist | Out-Null
 
+# Drop artifacts left over from other versions so that SHA256SUMS.txt only ever
+# describes the release we are building right now.
+Get-ChildItem $dist -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like '3DES-FileCrypto-*-win64-*' -and
+                   $_.Name -notlike "$name-*" } |
+    ForEach-Object { Write-Host "==> removing stale artifact: $($_.Name)"; Remove-Item $_.FullName -Force }
+
 # Both the .iss script and the .isl message file must be UTF-8 *with* BOM,
 # otherwise Inno reads CJK bytes as ANSI and the wizard text comes out garbled.
 $utf8bom = New-Object System.Text.UTF8Encoding($true)
