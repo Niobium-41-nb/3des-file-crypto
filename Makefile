@@ -16,7 +16,7 @@ WX       := windres
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -Iinclude -static -static-libgcc -static-libstdc++
 CORE     := src/des.cpp src/tdes.cpp src/selftest.cpp
 TOOL     := $(CORE) src/main.cpp
-GUI      := src/gui.cpp src/des.cpp src/tdes.cpp
+GUI      := src/gui.cpp src/des.cpp src/tdes.cpp src/selftest.cpp
 HEADERS  := include/des.h include/tdes.h
 RES      := assets/app_res.o
 RESDEP   := assets/app.rc assets/icon.ico
@@ -33,10 +33,11 @@ tdes.exe: $(TOOL) $(HEADERS) $(RES)
 	$(CXX) $(CXXFLAGS) -o tdes.exe $(TOOL) $(RES)
 
 # 图形界面：-mwindows 表示无控制台窗口，额外链接 comdlg32（文件对话框）
+# 与 comctl32（ListView / StatusBar / ToolTip 等通用控件）
 gui: tdes_gui.exe
 
 tdes_gui.exe: $(GUI) $(HEADERS) $(RES)
-	$(CXX) $(CXXFLAGS) -mwindows -o tdes_gui.exe $(GUI) $(RES) -lcomdlg32
+	$(CXX) $(CXXFLAGS) -mwindows -o tdes_gui.exe $(GUI) $(RES) -lcomdlg32 -lcomctl32
 
 test_kat.exe: tests/test_kat.cpp $(CORE) $(HEADERS)
 	$(CXX) $(CXXFLAGS) -o test_kat.exe tests/test_kat.cpp $(CORE)

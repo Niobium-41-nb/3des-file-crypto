@@ -110,7 +110,9 @@
                 "src/gui.cpp",
                 "src/des.cpp",
                 "src/tdes.cpp",
-                "-lcomdlg32"
+                "src/selftest.cpp",
+                "-lcomdlg32",
+                "-lcomctl32"
             ],
             "options": {
                 "cwd": "${workspaceFolder}"
