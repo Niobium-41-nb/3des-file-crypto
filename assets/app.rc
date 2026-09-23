@@ -13,10 +13,10 @@
 // ============================================================================
 
 #ifndef _VER_NUM
-  #define _VER_NUM 1,2,0,0        // FILEVERSION / PRODUCTVERSION（四段数字）
+  #define _VER_NUM 1,3,0,0        // FILEVERSION / PRODUCTVERSION（四段数字）
 #endif
 #ifndef _VER_STR
-  #define _VER_STR "1.2.0"        // 字符串形式的版本号
+  #define _VER_STR "1.3.0"        // 字符串形式的版本号
 #endif
 
 #define IDI_APPICON 101
