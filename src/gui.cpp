@@ -64,6 +64,9 @@
 #define IDI_APPICON 101
 #endif
 
+// 程序版本号（发版时与 assets/app.rc 的 _VER_STR、installer/3des.iss 的 MyAppVersion 同步修改）
+#define TDES_VERSION L"1.4.0"
+
 namespace {
 
 // ================================ 控件 / 命令 ID ================================
@@ -105,6 +108,8 @@ enum : int {
     IDC_ENC_SHOWKEY,
     IDC_ENC_OVERWRITE,
     IDC_ENC_NOTE,
+    IDC_ENC_KEY_IMPORT,
+    IDC_ENC_KEY_EXPORT,
 
     // ---- “解密到…”对话框 ----
     IDC_DEC_OUT = 4101,
@@ -114,6 +119,8 @@ enum : int {
     IDC_DEC_SHOWKEY,
     IDC_DEC_OVERWRITE,
     IDC_DEC_NOTE,
+    IDC_DEC_KEY_IMPORT,
+    IDC_DEC_KEY_EXPORT,
 
     // ---- 通用文本信息对话框 ----
     IDC_TXT_EDIT = 4201,
@@ -1405,6 +1412,75 @@ void updateDecHint(HWND d) {
     SetDlgItemTextW(d, IDC_DEC_HINT, t.c_str());
 }
 
+// 解密时算法由密钥长度推断（真正的算法/模式/IV 记录在密文文件头里）
+tdes::Alg inferAlgByHexLen(std::size_t n) {
+    if (n == 16) return tdes::Alg::DES;
+    if (n == 32) return tdes::Alg::TDES2;
+    return tdes::Alg::TDES3;
+}
+
+// ---------------------------- 密钥文件导入 / 导出 ----------------------------
+// 密钥可以另存为文本文件（.key），以后直接从这个文件读回来，无需再手抄那串十六进制：
+//   导入 —— 弹出“打开”对话框选 .key，校验后把密钥填入编辑框（并同步算法下拉框）；
+//   导出 —— 把编辑框里当前密钥写成一个带注释头的密钥文件，便于保管与传递。
+
+bool pickKeyFile(HWND owner, bool save, std::wstring& path) {
+    std::vector<wchar_t> buf(4096, L'\0');
+    if (save) {
+        const std::wstring def = L"3des_key.key";
+        std::copy(def.begin(), def.end(), buf.begin());
+    }
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"密钥文件 (*.key;*.txt)\0*.key;*.txt\0所有文件 (*.*)\0*.*\0\0";
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = (DWORD)buf.size();
+    ofn.lpstrTitle = save ? L"导出密钥到文件" : L"从密钥文件导入";
+    ofn.lpstrDefExt = L"key";
+    ofn.Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST |
+                (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+    const BOOL ok = save ? GetSaveFileNameW(&ofn) : GetOpenFileNameW(&ofn);
+    if (!ok) return false;
+    path = buf.data();
+    return true;
+}
+
+// 导入：成功则把密钥填进 keyId 编辑框（algComboId 非 0 时同步算法下拉框）
+bool importKeyFileToDlg(HWND dlg, int keyId, int algComboId, std::wstring& pathOut, tdes::Alg& algOut) {
+    std::wstring path;
+    if (!pickKeyFile(dlg, false, path)) return false;
+    std::vector<std::uint8_t> key;
+    std::string err;
+    if (!tdes::readKeyFile(wideToUtf8(path), key, algOut, err)) {
+        showError(dlg, utf8ToWide(err));
+        return false;
+    }
+    SetDlgItemTextW(dlg, keyId, utf8ToWide(tdes::toHex(key)).c_str());
+    if (algComboId) SendDlgItemMessageW(dlg, algComboId, CB_SETCURSEL, (WPARAM)((int)algOut - 1), 0);
+    pathOut = path;
+    return true;
+}
+
+// 导出：把 keyId 编辑框中的密钥写成密钥文件（失败时已弹框提示）
+bool exportKeyFromDlg(HWND dlg, int keyId, tdes::Alg alg, std::wstring& savedName) {
+    const std::wstring keyW = stripSpaces(getText(GetDlgItem(dlg, keyId)));
+    std::vector<std::uint8_t> key;
+    std::string err;
+    if (!tdes::parseKeyHex(wideToUtf8(keyW), alg, key, err)) {
+        showError(dlg, utf8ToWide(err));
+        return false;
+    }
+    std::wstring path;
+    if (!pickKeyFile(dlg, true, path)) return false;
+    if (!tdes::writeKeyFile(wideToUtf8(path), alg, key, err)) {
+        showError(dlg, utf8ToWide(err));
+        return false;
+    }
+    savedName = fileName(path);
+    return true;
+}
+
 struct EncCtx {
     std::wstring in;
     std::wstring out;
@@ -1466,6 +1542,26 @@ INT_PTR CALLBACK encDlgProc(HWND d, UINT msg, WPARAM wp, LPARAM lp) {
                     std::vector<std::uint8_t> key;
                     tdes::randomKey((tdes::Alg)(sel + 1), key);
                     SetDlgItemTextW(d, IDC_ENC_KEY, utf8ToWide(tdes::toHex(key)).c_str());
+                    updateEncHint(d);
+                    return TRUE;
+                }
+
+                case IDC_ENC_KEY_IMPORT: {
+                    std::wstring path;
+                    tdes::Alg alg = tdes::Alg::TDES3;
+                    if (importKeyFileToDlg(d, IDC_ENC_KEY, IDC_ENC_ALG, path, alg)) {
+                        SetDlgItemTextW(d, IDC_ENC_HINT,
+                                        (L"已从密钥文件导入：" + fileName(path)).c_str());
+                    }
+                    return TRUE;
+                }
+
+                case IDC_ENC_KEY_EXPORT: {
+                    const int sel = (int)SendDlgItemMessageW(d, IDC_ENC_ALG, CB_GETCURSEL, 0, 0);
+                    std::wstring saved;
+                    if (exportKeyFromDlg(d, IDC_ENC_KEY, (tdes::Alg)(sel + 1), saved)) {
+                        SetDlgItemTextW(d, IDC_ENC_HINT, (L"已导出密钥文件：" + saved).c_str());
+                    }
                     return TRUE;
                 }
 
@@ -1610,6 +1706,25 @@ INT_PTR CALLBACK decDlgProc(HWND d, UINT msg, WPARAM wp, LPARAM lp) {
                     return TRUE;
                 }
 
+                case IDC_DEC_KEY_IMPORT: {
+                    std::wstring path;
+                    tdes::Alg alg = tdes::Alg::TDES3;
+                    if (importKeyFileToDlg(d, IDC_DEC_KEY, 0, path, alg)) {
+                        SetDlgItemTextW(d, IDC_DEC_HINT,
+                                        (L"已从密钥文件导入：" + fileName(path)).c_str());
+                    }
+                    return TRUE;
+                }
+
+                case IDC_DEC_KEY_EXPORT: {
+                    const std::wstring keyW = stripSpaces(getText(GetDlgItem(d, IDC_DEC_KEY)));
+                    std::wstring saved;
+                    if (exportKeyFromDlg(d, IDC_DEC_KEY, inferAlgByHexLen(keyW.size()), saved)) {
+                        SetDlgItemTextW(d, IDC_DEC_HINT, (L"已导出密钥文件：" + saved).c_str());
+                    }
+                    return TRUE;
+                }
+
                 case IDC_DEC_OUT_BROWSE: {
                     std::vector<wchar_t> buf(4096, L'\0');
                     const std::wstring cur = getText(GetDlgItem(d, IDC_DEC_OUT));
@@ -1636,10 +1751,7 @@ INT_PTR CALLBACK decDlgProc(HWND d, UINT msg, WPARAM wp, LPARAM lp) {
                         return TRUE;
                     }
                     // 解密时算法由密钥长度推断（真正的算法/模式/IV 记录在密文文件头里）
-                    tdes::Alg alg = tdes::Alg::TDES3;
-                    if (keyW.size() == 16) alg = tdes::Alg::DES;
-                    else if (keyW.size() == 32) alg = tdes::Alg::TDES2;
-                    else if (keyW.size() == 48) alg = tdes::Alg::TDES3;
+                    const tdes::Alg alg = inferAlgByHexLen(keyW.size());
                     std::vector<std::uint8_t> key;
                     std::string err;
                     if (!tdes::parseKeyHex(wideToUtf8(keyW), alg, key, err)) {
@@ -1787,13 +1899,13 @@ void cmdEncrypt(HWND hwnd) {
     ctx.mode = tdes::Mode::CBC;
     ctx.key = g_sessionKey;  // 本次运行内复用上次的密钥（不落盘）
 
-    DlgTpl tpl(DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_SETFONT, 0, 336, 158,
+    DlgTpl tpl(DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_SETFONT, 0, 430, 158,
                L"添加到加密包", 9, DLG_FACE);
     tpl.item(SS_LEFT, 7, 10, 36, 10, (WORD)-1, 0x0082, L"加密到:");
-    tpl.item(ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 45, 8, 224, 14, IDC_ENC_OUT, 0x0081,
+    tpl.item(ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 45, 8, 318, 14, IDC_ENC_OUT, 0x0081,
              L"");
-    tpl.item(BS_PUSHBUTTON | WS_TABSTOP, 274, 8, 55, 14, IDC_ENC_OUT_BROWSE, 0x0080, L"浏览…");
-    tpl.sep(5, 28, 326);
+    tpl.item(BS_PUSHBUTTON | WS_TABSTOP, 368, 8, 55, 14, IDC_ENC_OUT_BROWSE, 0x0080, L"浏览…");
+    tpl.sep(5, 28, 420);
     tpl.item(SS_LEFT, 7, 36, 36, 10, (WORD)-1, 0x0082, L"加密格式:");
     tpl.item(CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 45, 34, 116, 90, IDC_ENC_ALG, 0x0085,
              L"");
@@ -1804,17 +1916,19 @@ void cmdEncrypt(HWND hwnd) {
     tpl.item(SS_LEFT, 7, 57, 36, 10, (WORD)-1, 0x0082, L"密钥:");
     tpl.item(ES_PASSWORD | ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 45, 55, 224, 14, IDC_ENC_KEY,
              0x0081, L"");
-    tpl.item(BS_PUSHBUTTON | WS_TABSTOP, 274, 55, 55, 14, IDC_ENC_GENKEY, 0x0080, L"随机生成");
-    tpl.item(SS_LEFT, 45, 72, 284, 10, IDC_ENC_HINT, 0x0082, L"");
+    tpl.item(BS_PUSHBUTTON | WS_TABSTOP, 274, 55, 52, 14, IDC_ENC_GENKEY, 0x0080, L"随机生成");
+    tpl.item(BS_PUSHBUTTON | WS_TABSTOP, 331, 55, 45, 14, IDC_ENC_KEY_IMPORT, 0x0080, L"导入…");
+    tpl.item(BS_PUSHBUTTON | WS_TABSTOP, 381, 55, 43, 14, IDC_ENC_KEY_EXPORT, 0x0080, L"导出…");
+    tpl.item(SS_LEFT, 45, 72, 379, 10, IDC_ENC_HINT, 0x0082, L"");
     tpl.item(BS_AUTOCHECKBOX | WS_TABSTOP, 45, 86, 52, 11, IDC_ENC_SHOWKEY, 0x0080, L"显示密钥");
-    tpl.item(BS_AUTOCHECKBOX | WS_TABSTOP, 108, 86, 130, 11, IDC_ENC_OVERWRITE, 0x0080,
+    tpl.item(BS_AUTOCHECKBOX | WS_TABSTOP, 108, 86, 160, 11, IDC_ENC_OVERWRITE, 0x0080,
              L"覆盖已有文件前先确认");
-    tpl.sep(5, 101, 326);
-    tpl.item(SS_LEFT, 7, 105, 322, 22, IDC_ENC_NOTE, 0x0082,
-             L"使用 CBC 模式时每次都会随机生成初始向量并写入密文文件头，"
-             L"解密时自动读取，无需手工记录。");
-    tpl.item(BS_DEFPUSHBUTTON | WS_TABSTOP, 216, 134, 55, 16, IDOK, 0x0080, L"确定");
-    tpl.item(BS_PUSHBUTTON | WS_TABSTOP, 274, 134, 55, 16, IDCANCEL, 0x0080, L"取消");
+    tpl.sep(5, 101, 420);
+    tpl.item(SS_LEFT, 7, 105, 412, 22, IDC_ENC_NOTE, 0x0082,
+             L"使用 CBC 模式时每次都会随机生成初始向量并写入密文文件头，解密时自动读取，无需手工记录。"
+             L"密钥可手工输入十六进制，也可用“导入…”从密钥文件读入，“导出…”保存成密钥文件。");
+    tpl.item(BS_DEFPUSHBUTTON | WS_TABSTOP, 310, 134, 55, 16, IDOK, 0x0080, L"确定");
+    tpl.item(BS_PUSHBUTTON | WS_TABSTOP, 368, 134, 55, 16, IDCANCEL, 0x0080, L"取消");
 
     if (DialogBoxIndirectParamW(g_hInst, tpl.data(), hwnd, encDlgProc, (LPARAM)&ctx) != IDOK ||
         !ctx.ok) {
@@ -1850,24 +1964,27 @@ void cmdDecrypt(HWND hwnd) {
     ctx.out = g_lastOut[1].empty() ? defaultDecryptOut(target) : g_lastOut[1];
     ctx.key = g_sessionKey;
 
-    DlgTpl tpl(DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_SETFONT, 0, 306, 136,
+    DlgTpl tpl(DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_SETFONT, 0, 430, 138,
                L"解密到…", 9, DLG_FACE);
     tpl.item(SS_LEFT, 7, 10, 36, 10, (WORD)-1, 0x0082, L"解密到:");
-    tpl.item(ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 45, 8, 194, 14, IDC_DEC_OUT, 0x0081, L"");
-    tpl.item(BS_PUSHBUTTON | WS_TABSTOP, 244, 8, 55, 14, IDC_DEC_OUT_BROWSE, 0x0080, L"浏览…");
-    tpl.sep(5, 28, 296);
+    tpl.item(ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 45, 8, 318, 14, IDC_DEC_OUT, 0x0081, L"");
+    tpl.item(BS_PUSHBUTTON | WS_TABSTOP, 368, 8, 55, 14, IDC_DEC_OUT_BROWSE, 0x0080, L"浏览…");
+    tpl.sep(5, 28, 420);
     tpl.item(SS_LEFT, 7, 37, 36, 10, (WORD)-1, 0x0082, L"密钥:");
-    tpl.item(ES_PASSWORD | ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 45, 35, 194, 14, IDC_DEC_KEY,
+    tpl.item(ES_PASSWORD | ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 45, 35, 224, 14, IDC_DEC_KEY,
              0x0081, L"");
-    tpl.item(BS_AUTOCHECKBOX | WS_TABSTOP, 244, 37, 55, 11, IDC_DEC_SHOWKEY, 0x0080, L"显示密钥");
-    tpl.item(SS_LEFT, 45, 53, 254, 10, IDC_DEC_HINT, 0x0082, L"");
-    tpl.item(BS_AUTOCHECKBOX | WS_TABSTOP, 45, 68, 130, 11, IDC_DEC_OVERWRITE, 0x0080,
+    tpl.item(BS_PUSHBUTTON | WS_TABSTOP, 274, 35, 52, 14, IDC_DEC_KEY_IMPORT, 0x0080, L"导入…");
+    tpl.item(BS_PUSHBUTTON | WS_TABSTOP, 331, 35, 45, 14, IDC_DEC_KEY_EXPORT, 0x0080, L"导出…");
+    tpl.item(BS_AUTOCHECKBOX | WS_TABSTOP, 381, 37, 45, 11, IDC_DEC_SHOWKEY, 0x0080, L"显示密钥");
+    tpl.item(SS_LEFT, 45, 53, 379, 10, IDC_DEC_HINT, 0x0082, L"");
+    tpl.item(BS_AUTOCHECKBOX | WS_TABSTOP, 45, 68, 160, 11, IDC_DEC_OVERWRITE, 0x0080,
              L"覆盖已有文件前先确认");
-    tpl.sep(5, 84, 296);
-    tpl.item(SS_LEFT, 7, 88, 292, 20, IDC_DEC_NOTE, 0x0082,
-             L"算法、工作模式与 IV 都保存在密文文件头中，此处只需提供密钥。");
-    tpl.item(BS_DEFPUSHBUTTON | WS_TABSTOP, 186, 114, 55, 16, IDOK, 0x0080, L"确定");
-    tpl.item(BS_PUSHBUTTON | WS_TABSTOP, 244, 114, 55, 16, IDCANCEL, 0x0080, L"取消");
+    tpl.sep(5, 84, 420);
+    tpl.item(SS_LEFT, 7, 88, 412, 20, IDC_DEC_NOTE, 0x0082,
+             L"算法、工作模式与 IV 都保存在密文文件头中，此处只需提供密钥；"
+             L"密钥可手工输入，也可用“导入…”从密钥文件读入。");
+    tpl.item(BS_DEFPUSHBUTTON | WS_TABSTOP, 310, 114, 55, 16, IDOK, 0x0080, L"确定");
+    tpl.item(BS_PUSHBUTTON | WS_TABSTOP, 368, 114, 55, 16, IDCANCEL, 0x0080, L"取消");
 
     if (DialogBoxIndirectParamW(g_hInst, tpl.data(), hwnd, decDlgProc, (LPARAM)&ctx) != IDOK ||
         !ctx.ok) {
@@ -2024,10 +2141,11 @@ void cmdSelfTest(HWND hwnd) {
 
 void cmdAbout(HWND hwnd) {
     const std::wstring txt =
-        L"3DES 任意文件加解密工具  v1.2.0\n\n"
+        std::wstring(L"3DES 任意文件加解密工具  v") + TDES_VERSION + L"\n\n" +
         L"手写实现 FIPS 46-3 规定的 DES 算法内核与 3DES（EDE）组合，\n"
         L"配合 CBC / ECB 两种工作模式与 PKCS#7 填充，\n"
         L"完全不依赖 OpenSSL、CryptoAPI 等任何现成密码库。\n\n"
+        L"密钥可导出为密钥文件、也可从密钥文件导入（命令行 -kf / keyexport / keyinfo）。\n\n"
         L"界面为纯 Win32 API 手工绘制，工具栏与列表图标全部由 GDI 现场生成，\n"
         L"整体布局模仿 7-Zip 的主窗口。\n\n"
         L"信息安全课程实验 · 2026";
@@ -2042,15 +2160,18 @@ void cmdUsage(HWND hwnd) {
         L"2) 地址栏显示当前文件夹，输入路径回车即可跳转（下拉列表为目录层级）；\n"
         L"3) 点击“加密”按钮弹出“添加到加密包”对话框：选择加密格式、工作模式，\n"
         L"   输入十六进制密钥（或点“随机生成”），确认输出文件名后点“确定”；\n"
-        L"4) 点击“解密”按钮弹出“解密到…”对话框：只需输入密钥，\n"
+        L"4) 密钥可以用“导入…”从密钥文件（.key）读入，用“导出…”保存成密钥文件，\n"
+        L"   无需手抄那串十六进制，也不怕记错；命令行版对应 -kf / --out；\n"
+        L"5) 点击“解密”按钮弹出“解密到…”对话框：只需输入或导入密钥，\n"
         L"   算法、工作模式与 IV 都会从密文文件头自动读取；\n"
-        L"5) “信息”可以查看当前文件详情，对 .3des 文件还会解析出文件头中的\n"
+        L"6) “信息”可以查看当前文件详情，对 .3des 文件还会解析出文件头中的\n"
         L"   算法、模式、IV、原始长度等信息；\n"
-        L"6) “测试”会运行内置的已知答案测试（KAT）与往返一致性检查。\n\n"
+        L"7) “测试”会运行内置的已知答案测试（KAT）与往返一致性检查。\n\n"
         L"快捷键：Ctrl+O 打开，Ctrl+E 加密，Ctrl+D 解密，Ctrl+K 随机密钥，\n"
         L"        F5 刷新列表，F1 使用说明。\n\n"
         L"默认输出名：加密为 <原文件名>.3des，解密为去掉 .3des 后的原名（无该后缀则追加 .dec）。\n"
-        L"安全提示：密钥只保存在内存中，程序退出即丢失，请务必自行妥善保管。";
+        L"安全提示：密钥默认只保存在内存中，程序退出即丢失；若导出为密钥文件，\n"
+        L"        请妥善保管该文件（它与密钥本身等价）。";
     showTextDialog(hwnd, L"使用说明", txt);
 }
 

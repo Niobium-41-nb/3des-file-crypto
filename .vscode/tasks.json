@@ -139,6 +139,25 @@
                 "3DES: 编译 tdes_gui.exe (图形界面)"
             ],
             "problemMatcher": []
+        },
+        {
+            "label": "3DES: 密钥文件导入导出测试",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "tools/keytest.ps1"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOn": [
+                "3DES: 编译 tdes.exe"
+            ],
+            "problemMatcher": []
         }
     ]
 }

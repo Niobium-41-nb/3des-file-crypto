@@ -13,10 +13,17 @@
 | 填充     | PKCS#7（补足 8 字节整数倍，且总能无歧义去填充）                                |
 | 文件类型 | 任意二进制文件；支持中文文件名与中文路径                                       |
 | 文件头   | 22 字节自描述头：魔数`TDS1` + 算法 + 模式 + IV + 明文原始长度                |
+| 密钥管理 | 密钥可**导出为密钥文件**（文本 `.key`，带注释头）或**从密钥文件导入**：命令行 `-kf <文件>` / `-k @<文件>` / `genkey --out` / `keyexport` / `keyinfo`，图形界面里点“导入…/导出…”（无需再手抄那串十六进制） |
 | 互操作   | `--raw` 模式可输出/读取不含文件头的裸密文，已与 .NET `TripleDES` 双向互解  |
-| 自检     | `tdes selftest` 内置 39 个用例（12 组标准向量 KAT + 6 组课程表格向量 + S 盒规则 + 弱密钥等）                       |
+| 自检     | `tdes selftest` 内置 50 个用例（12 组标准向量 KAT + 6 组课程表格向量 + S 盒规则 + 密钥文件 + 弱密钥等）                       |
 | 图形界面 | `tdes_gui.exe`：纯 Win32 API 窗口界面，整体模仿 **7-Zip 主窗口**（菜单栏 / 自绘工具栏 / 地址栏 / 文件列表 / 状态栏），加密与解密参数放在两个仿 7-Zip 的模态对话框里；支持拖放、列头排序与高分屏 |
 | 实现约束 | 纯 C++17 标准库，不调用 OpenSSL / CryptoAPI 等任何现成密码库                   |
+
+> **课程要求：3DES 的加解密的工作模式采用 DES。**
+> 即 3DES 的每一次加密/解密都直接由 DES 算法完成
+> （加密 `C = E(K3, D(K2, E(K1, P)))`，解密 `P = D(K1, E(K2, D(K3, C)))`，均调用同一个 DES 内核）；
+> 其分组长度（64 位）、16 轮 Feistel 结构、轮函数 f、密钥编排都与单重 DES 完全相同，
+> 3DES 仅通过叠加三次 DES 变换把有效密钥长度扩展到 112/168 位，不改变 DES 的内部结构。
 
 ## 2. 目录结构
 
@@ -37,6 +44,7 @@
 │   ├── dotnet_vectors.ps1   用 .NET 计算标准向量（第三方参照值）
 │   ├── crosscheck.ps1       与 .NET DES/TripleDES 的交叉验证
 │   ├── textbook_table.ps1   课程表格 6 组向量的三方（本程序 / .NET / 表格）比对
+│   ├── keytest.ps1          密钥文件导入/导出的命令行端到端测试
 │   ├── gui_smoke.ps1        图形界面端到端测试（脚本驱动菜单/工具栏与对话框，无需手工点击，并截取界面图）
 │   ├── gui_shot.ps1         仅截取本程序窗口的截图工具（不抓整个桌面）
 │   └── shot_installer.ps1   仅截取安装向导窗口的截图工具（用于核对中文界面）│   └── make_icon.py         程序图标生成脚本（Pillow 绘制，输出到 assets/）
@@ -64,7 +72,8 @@
 mingw32-make            # 编译命令行工具 tdes.exe 与图形界面 tdes_gui.exe
 mingw32-make gui        # 只编译图形界面
 mingw32-make icon       # 重新生成程序图标（需 Python + Pillow）
-mingw32-make test       # 编译并运行全部测试
+mingw32-make test       # 编译并运行全部测试（自检 + 文件级 + 密钥文件）
+mingw32-make key-test   # 只跑密钥文件导入导出测试
 mingw32-make gui-test   # 运行图形界面端到端测试
 ```
 
@@ -78,17 +87,20 @@ g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -static -static-libgcc -static-libstd
 > `-o` 使用相对路径是为了绕开 MinGW `ld` 无法处理含中文的**绝对**输出路径的问题；
 > `-static-libgcc -static-libstdc++` 可避免 PATH 中多套 MinGW 运行库混用导致程序退出时崩溃。
 
-VS Code 用户可直接运行任务：`3DES: 编译 tdes.exe`、`3DES: 运行内置自检`、`3DES: 编译并运行全部测试`、`3DES: 与 .NET 实现交叉验证`。
+VS Code 用户可直接运行任务：`3DES: 编译 tdes.exe`、`3DES: 运行内置自检`、`3DES: 编译并运行全部测试`、`3DES: 密钥文件导入导出测试`、`3DES: 与 .NET 实现交叉验证`。
 
 ## 4. 使用方法
 
 ```
 tdes selftest                                    运行内置自检（标准向量 KAT）
-tdes genkey [--alg des|3des2|3des3]              生成随机密钥
-tdes subkeys -k <HEX> [--alg ...]                打印 16 轮子密钥
+tdes genkey [--alg des|3des2|3des3] [--out <密钥文件>]
+                                                 生成随机密钥（--out 同时导出为密钥文件）
+tdes keyexport <密钥文件> -k <HEX>               把已有密钥导出为密钥文件
+tdes keyinfo <密钥文件>                          查看密钥文件（算法 / 长度 / 密钥HEX）
+tdes subkeys -k <HEX|@密钥文件> [--alg ...]      打印 16 轮子密钥
 tdes block [-e|-d] -k <HEX> -p <16位HEX> [--alg ...]
-tdes enc <明文文件> <密文文件> -k <HEX> [选项]   加密文件
-tdes dec <密文文件> <明文文件> -k <HEX> [选项]   解密文件
+tdes enc <明文文件> <密文文件> (-k <HEX>|-kf <密钥文件>) [选项]   加密文件
+tdes dec <密文文件> <明文文件> (-k <HEX>|-kf <密钥文件>) [选项]   解密文件
 ```
 
 选项：
@@ -96,7 +108,10 @@ tdes dec <密文文件> <明文文件> -k <HEX> [选项]   解密文件
 | 选项          | 含义                                                                        |
 | ------------- | --------------------------------------------------------------------------- |
 | `-k <HEX>`  | 密钥（十六进制）：DES = 16 字符，3DES-2Key = 32 字符，3DES-3Key = 48 字符   |
-| `--alg <N>` | `des` / `3des2` / `3des3`（默认 `3des3`）                           |
+| `-k @<文件>` | 等价于 `-kf <文件>`：从密钥文件导入密钥                                 |
+| `-kf <文件>` | 从密钥文件导入密钥（文件里写了 `alg=` 时以它为准）                        |
+| `-o` / `--out <文件>` | 导出密钥文件（配合 `genkey`）                                   |
+| `--alg <N>` | `des` / `3des2` / `3des3`（默认 `3des3`；使用密钥文件时可省略）     |
 | `-m <MODE>` | `cbc` / `ecb`（默认 `cbc`；解密时以密文文件头记录为准）               |
 | `-iv <HEX>` | 显式指定 8 字节 IV（默认非 raw 模式随机生成；raw 模式需自行约定，缺省全 0） |
 | `--raw`     | 不写 / 不读 22 字节文件头，用于与其它实现互操作                             |
@@ -104,21 +119,46 @@ tdes dec <密文文件> <明文文件> -k <HEX> [选项]   解密文件
 | `-q`        | 安静模式（`block` 子命令下只输出结果十六进制，便于脚本比对）              |
 | `-h`        | 帮助                                                                        |
 
+### 密钥文件（导入 / 导出）
+
+密钥可以存成文本文件反复使用，无需手抄那串十六进制（图形界面对应“导入… / 导出…”两个按钮）：
+
+```text
+# ============================================================
+# 3DES 文件加解密工具 —— 密钥文件
+# 生成时间: 2026-09-28 20:15:03
+# 算法: 3DES-3Key（24 字节密钥）
+# 提示: 本文件等同于密钥本身，请妥善保管，不要随密文一起公开。
+# ============================================================
+alg=3des3
+len=24
+key=D19FCEC956C9D946E8006F04C3106FC9260092AC091C9993
+```
+
+解析很宽容：忽略 `#` / `;` / `/` 开头的注释与空行，大小写不限，十六进制可以带空格或换行，
+`alg=` 与 `key=` 标记都可省略（省略 `alg=` 时按密钥长度自动识别 DES / 3DES-2Key / 3DES-3Key）。
+因此“只有一串十六进制的记事本文件”也能直接导入。
+
 ### 示例
 
 ```powershell
-# 1) 生成密钥
-.\tdes.exe genkey --alg 3des3
+# 1) 生成密钥并直接导出为密钥文件
+.\tdes.exe genkey --alg 3des3 --out '我的密钥.key'
 # 密钥HEX : D19FCEC956C9D946E8006F04C3106FC9260092AC091C9993
+# 密钥文件: 我的密钥.key
 
-# 2) 加密与解密（支持中文文件名）
-.\tdes.exe enc 'demo\信息明文.txt' 'demo\信息密文.3des' -k D19F...C9993
-.\tdes.exe dec 'demo\信息密文.3des' 'demo\信息还原.txt' -k D19F...C9993
+# 2) 用密钥文件加解密（支持中文文件名）
+.\tdes.exe enc 'demo\信息明文.txt' 'demo\信息密文.3des' -kf '我的密钥.key'
+.\tdes.exe dec 'demo\信息密文.3des' 'demo\信息还原.txt' -k '@我的密钥.key'
 
 # 3) 校验还原结果
 (Get-FileHash 'demo\信息明文.txt').Hash -eq (Get-FileHash 'demo\信息还原.txt').Hash   # True
 
-# 4) 与标准向量对照（教学演示）
+# 4) 查看密钥文件 / 把已有密钥再导出一份
+.\tdes.exe keyinfo '我的密钥.key'
+.\tdes.exe keyexport '备份密钥.key' -k D19F...C9993
+
+# 5) 与标准向量对照（教学演示）
 .\tdes.exe block -k 133457799BBCDFF1 -p 0123456789ABCDEF --alg des
 # 输出密文   : 85E813540F0AB405
 ```
@@ -149,16 +189,16 @@ tdes dec <密文文件> <明文文件> -k <HEX> [选项]   解密文件
 加密与解密的参数放在两个同样仿 7-Zip 的模态对话框里：
 
 * **“添加到加密包…”**（对应 7-Zip 的“添加到压缩包”）——加密时弹出：输出文件（默认名已预填，带“浏览…”）、
-  加密格式（DES / 3DES-2Key / 3DES-3Key）、工作模式（CBC / ECB）、密钥（带“随机生成”与“显示密钥”）、
+  加密格式（DES / 3DES-2Key / 3DES-3Key）、工作模式（CBC / ECB）、密钥（带“随机生成 / 导入… / 导出…”与“显示密钥”）、
   覆盖前确认；
-* **“解密到…”**（对应 7-Zip 的“提取”）——解密时弹出：只需填写密钥，
+* **“解密到…”**（对应 7-Zip 的“提取”）——解密时弹出：只需填写或导入密钥，
   算法 / 模式 / IV 都从密文文件头自动读取，并实时提示“识别为 3DES-3Key 密钥”。
 
 使用步骤：
 
 1. 在文件列表里**单击 / 双击**选中要处理的文件，也可点“打开…”或**直接把文件拖进窗口**；
 2. 地址栏显示当前文件夹，直接输入路径回车即可跳转（下拉列表为目录层级，“↑”按钮向上一级）；
-3. 点“加密”/“解密”弹出参数对话框，确认后执行；
+3. 点“加密”/“解密”弹出参数对话框，确认后执行（密钥可现场输入、点“随机生成”、或“导入…”密钥文件）；
 4. “信息”查看文件详情，对 `.3des` 文件还会解析出文件头中的算法、模式、IV、原始长度；
 5. “测试”运行内置 KAT 与往返一致性自检。
 
@@ -193,11 +233,12 @@ tdes dec <密文文件> <明文文件> -k <HEX> [选项]   解密文件
 ## 6. 测试
 
 ```powershell
-.\tdes.exe selftest        # 39 个用例：12 组标准向量 KAT + 6 组课程表格向量 + S 盒/弱密钥等
-.\test_kat.exe             # 52 个用例：文件级往返 + 错误注入 + 性能测试
+.\tdes.exe selftest        # 50 个用例：12 组标准向量 KAT + 6 组课程表格向量 + S 盒/弱密钥/密钥文件等
+.\test_kat.exe             # 58 个用例：文件级往返 + 错误注入 + 密钥文件链路 + 性能测试
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\keytest.ps1         # 密钥文件导入导出 18 项（genkey --out / -kf / keyexport / keyinfo）
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\crosscheck.ps1      # 与 .NET 交叉验证 16 项
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\textbook_table.ps1  # 课程表格 6 组三方比对
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\gui_smoke.ps1       # 图形界面端到端 21 项（含两个对话框与输出路径）
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\gui_smoke.ps1       # 图形界面端到端 30 项（含两个对话框、密钥文件导入导出与输出路径）
 ```
 
 标准向量来自教材经典向量与 .NET `System.Security.Cryptography`（DES / TripleDES，ECB，无填充），
@@ -231,8 +272,8 @@ S 盒的行列约定：6 位输入的**首末两位**拼成行号（00→第 1 �
 
 | 下载文件 | 说明 |
 | --- | --- |
-| `3DES-FileCrypto-1.3.0-win64-setup.exe` | Windows 64 位**安装程序**（Inno Setup 制作，中文向导） |
-| `3DES-FileCrypto-1.3.0-win64-portable.zip` | **免安装便携版**，解压即用 |
+| `3DES-FileCrypto-1.4.0-win64-setup.exe` | Windows 64 位**安装程序**（Inno Setup 制作，中文向导） |
+| `3DES-FileCrypto-1.4.0-win64-portable.zip` | **免安装便携版**，解压即用 |
 | `SHA256SUMS.txt` | 上述文件的 SHA-256 校验值 |
 
 > 文件名中的版本号以发行版页面上的最新版为准
@@ -247,7 +288,7 @@ S 盒的行列约定：6 位输入的**首末两位**拼成行号（00→第 1 �
 
 ```powershell
 # 静默安装到指定目录（不加 PATH、不建桌面图标）
-.\3DES-FileCrypto-1.3.0-win64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART `
+.\3DES-FileCrypto-1.4.0-win64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART `
     /DIR="C:\Tools\3DES" /MERGETASKS="!addtopath,!desktopicon"
 # 静默卸载
 "C:\Tools\3DES\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART

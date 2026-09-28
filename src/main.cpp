@@ -3,10 +3,14 @@
 //  ---------------------------------------------------------------------------
 //  子命令：
 //    selftest  内置自检（标准向量 / 往返 / 模式性质）
-//    genkey    生成随机密钥
+//    genkey    生成随机密钥（可用 --out 直接导出为密钥文件）
+//    keyexport 把已有密钥导出为密钥文件
+//    keyinfo   查看密钥文件内容（算法 / 长度 / 密钥HEX）
 //    subkeys   打印指定密钥的 16 轮子密钥（教学观察用）
 //    block     对单个 64 位分组加解密（与标准向量对照用）
 //    enc/dec   文件加密 / 解密
+//  密钥既可以写十六进制（-k <HEX>），也可以放在文件里导入（-kf <文件> 或 -k @<文件>）；
+//  加密 / 解密对话框与命令行共用同一套密钥文件格式（见 tdes::makeKeyText）。
 //  Windows 下通过 CommandLineToArgvW 取得 UTF-16 命令行并转为 UTF-8，
 //  再配合 std::filesystem 的 u8path，保证中文文件名也能正确处理。
 // ============================================================================
@@ -68,16 +72,24 @@ void printUsage() {
         "\n"
         "用法:\n"
         "  tdes selftest                                    运行内置自检（标准向量 KAT）\n"
-        "  tdes genkey [--alg des|3des2|3des3]              生成随机密钥\n"
-        "  tdes subkeys -k <HEX> [--alg ...]                打印 16 轮子密钥\n"
-        "  tdes block [-e|-d] -k <HEX> -p <16位HEX> [--alg ...]\n"
+        "  tdes genkey [--alg des|3des2|3des3] [--out <密钥文件>]\n"
+        "                                                   生成随机密钥（--out 同时导出到文件）\n"
+        "  tdes keyexport <密钥文件> -k <HEX>               把已有密钥导出为密钥文件\n"
+        "  tdes keyinfo <密钥文件>                          查看密钥文件（算法 / 长度 / 密钥HEX）\n"
+        "  tdes subkeys -k <HEX|@密钥文件> [--alg ...]      打印 16 轮子密钥\n"
+        "  tdes block [-e|-d] -k <HEX|@密钥文件> -p <16位HEX> [--alg ...]\n"
         "                                                   对单个 64 位分组加/解密\n"
-        "  tdes enc <明文文件> <密文文件> -k <HEX> [选项]   加密文件\n"
-        "  tdes dec <密文文件> <明文文件> -k <HEX> [选项]   解密文件\n"
+        "  tdes enc <明文文件> <密文文件> (-k <HEX>|-kf <密钥文件>) [选项]\n"
+        "  tdes dec <密文文件> <明文文件> (-k <HEX>|-kf <密钥文件>) [选项]\n"
         "\n"
         "选项:\n"
         "  -k <HEX>     密钥(十六进制)：DES=8 字节 / 3DES-2Key=16 字节 / 3DES-3Key=24 字节\n"
-        "  --alg <N>    算法: des | 3des2 | 3des3     (默认 3des3)\n"
+        "  -k @<文件>   等价于 -kf <文件>（从密钥文件导入密钥）\n"
+        "  -kf <文件>   从密钥文件导入密钥（文件里若有 alg= 则以它为准）\n"
+        "  --keyfile <文件>   -kf 的长写法\n"
+        "  -o <文件>    导出密钥文件（用于 genkey）\n"
+        "  --out <文件>  -o 的长写法\n"
+        "  --alg <N>    算法: des | 3des2 | 3des3     (默认 3des3；用密钥文件时可省略)\n"
         "  -m <MODE>    工作模式: cbc | ecb           (默认 cbc；解密时自动读密文文件头)\n"
         "  -iv <HEX>    显式指定 8 字节 IV             (默认: 非 raw 模式随机生成并写入文件头；\n"
         "                                              --raw 模式必须自行约定，缺省全 0)\n"
@@ -87,9 +99,10 @@ void printUsage() {
         "  -h           显示本帮助\n"
         "\n"
         "示例:\n"
-        "  tdes genkey --alg 3des3\n"
-        "  tdes enc 实验报告.docx 实验报告.docx.3des -k <24字节HEX>\n"
-        "  tdes dec 实验报告.docx.3des 还原.docx     -k <24字节HEX>\n"
+        "  tdes genkey --alg 3des3 --out 我的密钥.key      生成并导出密钥文件\n"
+        "  tdes enc 实验报告.docx 实验报告.docx.3des -kf 我的密钥.key\n"
+        "  tdes dec 实验报告.docx.3des 还原.docx     -k @我的密钥.key\n"
+        "  tdes keyinfo 我的密钥.key                       查看密钥文件\n"
         "  tdes block -k 133457799BBCDFF1 -p 0123456789ABCDEF --alg des\n");
 }
 
@@ -97,6 +110,8 @@ struct Options {
     std::string cmd;
     std::vector<std::string> pos;
     std::string keyHex;
+    std::string keyFile;   // 密钥文件路径（-kf / --keyfile / -k @文件）
+    std::string outFile;   // 导出密钥文件的路径（-o / --out）
     std::string ivHex;
     std::string blockHex;
     tdes::Alg alg = tdes::Alg::TDES3;
@@ -132,7 +147,17 @@ bool parseOptions(const std::vector<std::string>& a, Options& o, std::string& er
         } else if (s == "-k") {
             const std::string* v = valueOf("-k");
             if (!v) return false;
-            o.keyHex = *v;
+            // -k @密钥文件 等价于 -kf 密钥文件
+            if (!v->empty() && (*v)[0] == '@') o.keyFile = v->substr(1);
+            else o.keyHex = *v;
+        } else if (s == "-kf" || s == "--keyfile") {
+            const std::string* v = valueOf("--keyfile");
+            if (!v) return false;
+            o.keyFile = *v;
+        } else if (s == "-o" || s == "--out") {
+            const std::string* v = valueOf("--out");
+            if (!v) return false;
+            o.outFile = *v;
         } else if (s == "-iv") {
             const std::string* v = valueOf("-iv");
             if (!v) return false;
@@ -176,9 +201,40 @@ bool parseOptions(const std::vector<std::string>& a, Options& o, std::string& er
     return true;
 }
 
+// 统一解析密钥来源：-k <HEX> / -k @<文件> / -kf <文件>
+//   key —— 输出密钥字节；hex —— 输出密钥的十六进制形式（用于显示）
+//   alg —— 入口为期望算法；使用密钥文件时以文件中的声明为准，与 --alg 冲突则报错
+//   byLen —— true 时允许按十六进制长度推断算法（未显式给出 --alg 或解密时使用）
+bool resolveKey(const Options& o, bool byLen, tdes::Alg& alg, std::vector<std::uint8_t>& key,
+                std::string& hex, std::string& err) {
+    if (!o.keyFile.empty()) {
+        tdes::Alg fileAlg = tdes::Alg::TDES3;
+        if (!tdes::readKeyFile(o.keyFile, key, fileAlg, err)) return false;
+        if (o.algGiven && o.alg != fileAlg) {
+            err = std::string("命令行 --alg ") + tdes::algName(o.alg) + " 与密钥文件中声明的 " +
+                  tdes::algName(fileAlg) + " 不一致";
+            return false;
+        }
+        alg = fileAlg;
+        hex = tdes::toHex(key);
+        return true;
+    }
+    if (o.keyHex.empty()) {
+        err = "缺少密钥：请用 -k <密钥HEX>，或用 -kf <密钥文件> / -k @<密钥文件> 导入";
+        return false;
+    }
+    if (byLen) {
+        if (o.keyHex.size() == 16) alg = tdes::Alg::DES;
+        else if (o.keyHex.size() == 32) alg = tdes::Alg::TDES2;
+        else if (o.keyHex.size() == 48) alg = tdes::Alg::TDES3;
+    }
+    if (!tdes::parseKeyHex(o.keyHex, alg, key, err)) return false;
+    hex = tdes::toHex(key);
+    return true;
+}
+
 void printStats(bool encrypt, const tdes::Params& p, const tdes::FileResult& r,
-                const std::string& inPath, const std::string& outPath, long long ms) {
-    const double mb = (double)r.inBytes / 1048576.0;
+                const std::string& inPath, const std::string& outPath, long long ms) {    const double mb = (double)r.inBytes / 1048576.0;
     const double speed = ms > 0 ? mb / ((double)ms / 1000.0) : 0.0;
     std::printf("操作      : %s\n", encrypt ? "加密" : "解密");
     std::printf("算法      : %s\n", tdes::algName(p.alg));
@@ -193,15 +249,16 @@ void printStats(bool encrypt, const tdes::Params& p, const tdes::FileResult& r,
 }
 
 int doSubkeys(const Options& o) {
-    std::string err;
+    std::string err, hex;
     std::vector<std::uint8_t> key;
-    if (!tdes::parseKeyHex(o.keyHex, o.alg, key, err)) {
+    tdes::Alg alg = o.alg;
+    if (!resolveKey(o, !o.algGiven, alg, key, hex, err)) {
         std::fprintf(stderr, "错误: %s\n", err.c_str());
         return 2;
     }
     des::SubKeys sk;
     des::keySchedule(key.data(), sk);
-    std::printf("算法: %s   密钥: %s\n", tdes::algName(o.alg), o.keyHex.c_str());
+    std::printf("算法: %s   密钥: %s\n", tdes::algName(alg), hex.c_str());
     std::printf("注：3DES 只展示 K1 的 16 个子密钥，K2/K3 同理。\n");
     for (int i = 0; i < 16; ++i) {
         std::printf("K%-2d = %012llX\n", i + 1, (unsigned long long)sk.k[i]);
@@ -210,9 +267,10 @@ int doSubkeys(const Options& o) {
 }
 
 int doBlock(const Options& o) {
-    std::string err;
+    std::string err, hex;
     std::vector<std::uint8_t> key;
-    if (!tdes::parseKeyHex(o.keyHex, o.alg, key, err)) {
+    tdes::Alg alg = o.alg;
+    if (!resolveKey(o, !o.algGiven, alg, key, hex, err)) {
         std::fprintf(stderr, "错误: %s\n", err.c_str());
         return 2;
     }
@@ -222,20 +280,55 @@ int doBlock(const Options& o) {
         std::fprintf(stderr, "错误: 分组数据必须是 16 个十六进制字符\n");
         return 2;
     }
-    const std::vector<des::SubKeys> ks = tdes::buildSubKeys(key, o.alg);
+    const std::vector<des::SubKeys> ks = tdes::buildSubKeys(key, alg);
     if (o.decrypt) {
-        tdes::decryptBlock(in, out, ks, o.alg);
+        tdes::decryptBlock(in, out, ks, alg);
     } else {
-        tdes::encryptBlock(in, out, ks, o.alg);
+        tdes::encryptBlock(in, out, ks, alg);
     }
     if (o.quiet) {  // 机器可读输出：只打印结果十六进制，便于脚本比对
         std::printf("%s\n", tdes::toHex(out, 8).c_str());
         return 0;
     }
-    std::printf("算法     : %s\n", tdes::algName(o.alg));
-    std::printf("密钥     : %s\n", o.keyHex.c_str());
+    std::printf("算法     : %s\n", tdes::algName(alg));
+    std::printf("密钥     : %s\n", hex.c_str());
     std::printf("%s   : %s\n", o.decrypt ? "密文分组" : "明文分组", inHex.c_str());
     std::printf("%s   : %s\n", o.decrypt ? "还原明文" : "输出密文", tdes::toHex(out, 8).c_str());
+    return 0;
+}
+
+// 把已有密钥导出为密钥文件
+int doKeyExport(const Options& o) {
+    std::string err, hex;
+    std::vector<std::uint8_t> key;
+    tdes::Alg alg = o.alg;
+    if (!resolveKey(o, !o.algGiven, alg, key, hex, err)) {
+        std::fprintf(stderr, "错误: %s\n", err.c_str());
+        return 2;
+    }
+    if (!tdes::writeKeyFile(o.pos[0], alg, key, err)) {
+        std::fprintf(stderr, "错误: %s\n", err.c_str());
+        return 4;
+    }
+    std::printf("算法      : %s\n", tdes::algName(alg));
+    std::printf("密钥HEX   : %s\n", hex.c_str());
+    std::printf("密钥文件  : %s\n", o.pos[0].c_str());
+    return 0;
+}
+
+// 查看 / 校验密钥文件
+int doKeyInfo(const Options& o) {
+    std::vector<std::uint8_t> key;
+    tdes::Alg alg = tdes::Alg::TDES3;
+    std::string err;
+    if (!tdes::readKeyFile(o.pos[0], key, alg, err)) {
+        std::fprintf(stderr, "错误: %s\n", err.c_str());
+        return 2;
+    }
+    std::printf("密钥文件  : %s\n", o.pos[0].c_str());
+    std::printf("算法      : %s\n", tdes::algName(alg));
+    std::printf("密钥长度  : %zu 字节\n", key.size());
+    std::printf("密钥HEX   : %s\n", tdes::toHex(key).c_str());
     return 0;
 }
 
@@ -278,24 +371,41 @@ int main(int argc, char** argv) {
         std::printf("算法    : %s\n", tdes::algName(o.alg));
         std::printf("密钥HEX : %s\n", tdes::toHex(key).c_str());
         std::printf("密钥长度: %zu 字节\n", key.size());
+        if (!o.outFile.empty()) {  // 直接导出为密钥文件，便于保管与传递
+            if (!tdes::writeKeyFile(o.outFile, o.alg, key, err)) {
+                std::fprintf(stderr, "错误: %s\n", err.c_str());
+                return 4;
+            }
+            std::printf("密钥文件: %s\n", o.outFile.c_str());
+        }
         return 0;
+    }
+
+    // ------------------------------ keyexport -----------------------------
+    if (o.cmd == "keyexport" || o.cmd == "keyout") {
+        if (o.pos.size() != 1) {
+            std::fprintf(stderr, "错误: 用法 tdes keyexport <密钥文件> -k <HEX> [--alg ...]\n");
+            return 2;
+        }
+        return doKeyExport(o);
+    }
+
+    // ------------------------------- keyinfo ------------------------------
+    if (o.cmd == "keyinfo" || o.cmd == "keyfile" || o.cmd == "keyimport") {
+        if (o.pos.size() != 1) {
+            std::fprintf(stderr, "错误: 用法 tdes keyinfo <密钥文件>\n");
+            return 2;
+        }
+        return doKeyInfo(o);
     }
 
     // ------------------------------ subkeys -------------------------------
     if (o.cmd == "subkeys" || o.cmd == "keys") {
-        if (o.keyHex.empty()) {
-            std::fprintf(stderr, "错误: 需要 -k <密钥HEX>\n");
-            return 2;
-        }
         return doSubkeys(o);
     }
 
     // ------------------------------- block --------------------------------
     if (o.cmd == "block") {
-        if (o.keyHex.empty()) {
-            std::fprintf(stderr, "错误: 需要 -k <密钥HEX>\n");
-            return 2;
-        }
         return doBlock(o);
     }
 
@@ -308,24 +418,22 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (o.pos.size() != 2) {
-        std::fprintf(stderr, "错误: 需要给出 <输入文件> 和 <输出文件> 两个路径\n");
-        return 2;
-    }
-    if (o.keyHex.empty()) {
-        std::fprintf(stderr, "错误: 缺少密钥，请用 -k <密钥HEX>（可用 genkey 生成）\n");
+        if (o.pos.size() > 2) {
+            std::fprintf(stderr, "错误: 参数过多（%zu 个），enc/dec 只需要 <输入文件> 和 <输出文件>；\n"
+                                 "      密钥请用 -k <HEX> 或 -kf <密钥文件>（注意 -k 不能省略），多余的参数：%s\n",
+                         o.pos.size(), o.pos[2].c_str());
+        } else {
+            std::fprintf(stderr, "错误: 需要给出 <输入文件> 和 <输出文件> 两个路径\n");
+        }
         return 2;
     }
 
-    // 解密时算法从密文文件头读取，这里只做长度上的预检，故不强制按 -k 长度解析
+    // 密钥来源：-k <HEX> 或 -kf <密钥文件> / -k @<密钥文件>
+    // 解密时算法从密文文件头读取，这里只按密钥长度做长度上的预检，故允许“按长度推断”
     tdes::Alg keyAlg = o.alg;
     std::vector<std::uint8_t> key;
-    if (isDec && !o.raw) {
-        // 文件头中的算法可能是 DES/3DES2/3DES3，按密钥字符数推断
-        if (o.keyHex.size() == 16) keyAlg = tdes::Alg::DES;
-        else if (o.keyHex.size() == 32) keyAlg = tdes::Alg::TDES2;
-        else if (o.keyHex.size() == 48) keyAlg = tdes::Alg::TDES3;
-    }
-    if (!tdes::parseKeyHex(o.keyHex, keyAlg, key, err)) {
+    std::string keyHex;
+    if (!resolveKey(o, isDec && !o.raw, keyAlg, key, keyHex, err)) {
         std::fprintf(stderr, "错误: %s\n", err.c_str());
         return 2;
     }
@@ -376,6 +484,7 @@ int main(int argc, char** argv) {
             std::printf("提示: 命令行指定的模式 %s 与密文文件头记录的 %s 不一致，已按文件头处理。\n",
                         tdes::modeName(o.mode), tdes::modeName(used.mode));
         }
+        if (!o.keyFile.empty()) std::printf("密钥来源  : %s（算法取自密钥文件）\n", o.keyFile.c_str());
         printStats(isEnc, used, res, inPath, outPath, ms);
     }
     return 0;

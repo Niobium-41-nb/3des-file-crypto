@@ -162,6 +162,76 @@ void testErrorPaths(const fs::path& dir) {
     writeFile(encPath, cbuf);
 }
 
+// ---------------------- 4. 密钥文件的端到端使用 ----------------------
+// 验证“导出密钥文件 → 从文件导入 → 加解密 → 再次导出 → 解密还原”的完整链路，
+// 以及损坏 / 不匹配的密钥文件被拒绝。
+void testKeyFiles(const fs::path& dir) {
+    const std::string plainPath = (dir / "kf_plain.bin").string();
+    const std::string encPath   = (dir / "kf_cipher.bin").string();
+    const std::string decPath   = (dir / "kf_back.bin").string();
+    const std::string keyPath   = (dir / "kf_key.key").string();
+    const std::string keyPath2  = (dir / "kf_key_copy.key").string();
+    const std::string badPath   = (dir / "kf_bad.key").string();
+    const std::string desKeyPath = (dir / "kf_des.key").string();
+
+    std::vector<std::uint8_t> plain(5000);
+    for (std::size_t i = 0; i < plain.size(); ++i) plain[i] = (std::uint8_t)(i * 31 + 7);
+    writeFile(plainPath, plain);
+
+    // ① 导出密钥文件，再导入回来
+    std::vector<std::uint8_t> key;
+    tdes::randomKey(Alg::TDES3, key);
+    std::string err;
+    const bool written = tdes::writeKeyFile(keyPath, Alg::TDES3, key, err);
+    check(written, "密钥导出为文件", written ? keyPath : err);
+
+    std::vector<std::uint8_t> k1;
+    Alg a1 = Alg::DES;
+    const bool imported = written && tdes::readKeyFile(keyPath, k1, a1, err) &&
+                          a1 == Alg::TDES3 && k1 == key;
+    check(imported, "从密钥文件导入（算法与密钥一致）",
+          imported ? "3DES-3Key / 24 字节" : err);
+
+    // ② 用导入的密钥加密
+    Params p;
+    p.alg = a1;
+    p.mode = Mode::CBC;
+    FileResult r1{};
+    const bool encOk = imported && tdes::encryptFile(plainPath, encPath, k1, p, r1, err);
+    check(encOk, "用导入的密钥加密文件",
+          encOk ? std::to_string(r1.outBytes) + " 字节密文" : err);
+
+    // ③ 把同一密钥再导出一次（模拟“把密钥文件分发给解密方”），用它解密
+    const bool copied = tdes::writeKeyFile(keyPath2, a1, k1, err);
+    std::vector<std::uint8_t> k2;
+    Alg a2 = Alg::DES;
+    const bool reImported = copied && tdes::readKeyFile(keyPath2, k2, a2, err) && k2 == key;
+    Params used;
+    FileResult r2{};
+    const bool decOk = reImported && tdes::decryptFile(encPath, decPath, k2, p, used, r2, err);
+    std::vector<std::uint8_t> back;
+    const bool same = decOk && readFile(decPath, back) && back == plain;
+    check(same, "用重新导出的密钥解密还原一致", same ? "5000 字节内容完全相同" : err);
+
+    // ④ 非法 / 损坏的密钥文件必须被拒绝
+    writeFile(badPath, std::vector<std::uint8_t>{'k', 'e', 'y', '=', '1', '2', '3'});
+    std::vector<std::uint8_t> kb;
+    Alg ab = Alg::TDES3;
+    const bool rejected = !tdes::readKeyFile(badPath, kb, ab, err);
+    check(rejected, "非法密钥文件被拒绝", rejected ? err : "未检出");
+
+    // ⑤ 用长度不匹配的密钥（DES 密钥解 3DES 密文）解密必须失败
+    std::vector<std::uint8_t> desKey;
+    tdes::randomKey(Alg::DES, desKey);
+    tdes::writeKeyFile(desKeyPath, Alg::DES, desKey, err);
+    std::vector<std::uint8_t> kd;
+    Alg ad = Alg::TDES3;
+    const bool rd = tdes::readKeyFile(desKeyPath, kd, ad, err) && ad == Alg::DES;
+    const bool mismatchRejected = rd && !tdes::decryptFile(encPath, decPath, kd, p, used, r2, err);
+    check(mismatchRejected, "算法/长度不匹配的密钥解密被拒绝",
+          mismatchRejected ? err : "竟然成功");
+}
+
 // ------------------------------ 3. 性能测试 ------------------------------
 void benchmark() {
     const std::size_t MB = 1048576;
@@ -207,6 +277,8 @@ int main() {
     testFileRoundTrip(dir);
     std::printf("---------------------------------------\n");
     testErrorPaths(dir);
+    std::printf("---------------------------------------\n");
+    testKeyFiles(dir);
     std::printf("---------------------------------------\n");
     std::printf("用例总数 %d，通过 %d，失败 %d\n", g_pass + g_fail, g_pass, g_fail);
 

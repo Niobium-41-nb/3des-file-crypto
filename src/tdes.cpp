@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -125,6 +127,213 @@ bool randomKey(Alg a, std::vector<std::uint8_t>& key) {
 bool randomIV(std::uint8_t iv[IV_SIZE]) {
     std::uniform_int_distribution<int> dist(0, 255);
     for (std::size_t i = 0; i < IV_SIZE; ++i) iv[i] = (std::uint8_t)dist(rng());
+    return true;
+}
+
+// ============================ 密钥文件 ============================
+// 密钥除手工键入十六进制外，还可以导出为文本文件保存 / 传递，之后再从文件导入。
+// 文本格式故意做得“宽松可读”：注释、空行、空格、换行、大小写都不影响解析，
+// key= 与 alg= 两个字段都可省略（省略 alg 时按十六进制长度推断算法）。
+
+namespace {
+
+char lowerAscii(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c; }
+
+std::string lowerAscii(const std::string& s) {
+    std::string r = s;
+    for (char& c : r) c = lowerAscii(c);
+    return r;
+}
+
+// 去掉首尾的空白字符（空格 / 制表符 / CR / LF）
+std::string trimAscii(const std::string& s) {
+    std::size_t b = 0, e = s.size();
+    auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+    while (b < e && space(s[b])) ++b;
+    while (e > b && space(s[e - 1])) --e;
+    return s.substr(b, e - b);
+}
+
+std::string removeSpaces(const std::string& s) {
+    std::string r;
+    r.reserve(s.size());
+    for (char c : s) {
+        if (c != ' ' && c != '\t' && c != '\r' && c != '\n') r.push_back(c);
+    }
+    return r;
+}
+
+bool isHexString(const std::string& s) {
+    if (s.empty()) return false;
+    for (char c : s) {
+        if (hexVal(c) < 0) return false;
+    }
+    return true;
+}
+
+// 文件里写的算法名 → Alg（导出用短名，同时兼容 algName() 的写法）
+const char* algToken(Alg a) {
+    switch (a) {
+        case Alg::DES:   return "des";
+        case Alg::TDES2: return "3des2";
+        case Alg::TDES3: return "3des3";
+    }
+    return "?";
+}
+
+// 按密钥字节数推断算法（8/16/24 字节分别为 DES / 3DES-2Key / 3DES-3Key）
+bool inferAlgByKeyLen(std::size_t n, Alg& a) {
+    if (n == keyBytes(Alg::DES)) { a = Alg::DES; return true; }
+    if (n == keyBytes(Alg::TDES2)) { a = Alg::TDES2; return true; }
+    if (n == keyBytes(Alg::TDES3)) { a = Alg::TDES3; return true; }
+    return false;
+}
+
+// 生成时间戳（只用于文件注释；时间取不到时退化成 "?"）
+std::string nowStamp() {
+    const std::time_t t = std::time(nullptr);
+    std::tm tmv{};
+#ifdef _MSC_VER
+    localtime_s(&tmv, &t);
+#else
+    if (std::tm* p = std::localtime(&t)) tmv = *p;
+#endif
+    char buf[32] = {0};
+    if (std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmv) == 0) return "?";
+    return buf;
+}
+
+}  // namespace
+
+bool parseAlgName(const std::string& name, Alg& a) {
+    const std::string t = lowerAscii(trimAscii(name));
+    if (t == "des" || t == "des1" || t == "1des" || t == "single") {
+        a = Alg::DES;
+        return true;
+    }
+    if (t == "3des2" || t == "tdes2" || t == "des2" || t == "2key" || t == "3des-2key") {
+        a = Alg::TDES2;
+        return true;
+    }
+    if (t == "3des" || t == "3des3" || t == "tdes" || t == "tdes3" || t == "des3" || t == "3key" ||
+        t == "3des-3key") {
+        a = Alg::TDES3;
+        return true;
+    }
+    return false;
+}
+
+std::string makeKeyText(Alg a, const std::vector<std::uint8_t>& key) {
+    std::string s;
+    s += "# ============================================================\n";
+    s += "# 3DES 文件加解密工具 —— 密钥文件\n";
+    s += "# 生成时间: " + nowStamp() + "\n";
+    s += "# 算法: " + std::string(algName(a)) + "（" + std::to_string(keyBytes(a)) + " 字节密钥）\n";
+    s += "# 提示: 本文件等同于密钥本身，请妥善保管，不要随密文一起公开。\n";
+    s += "#       导入方式：命令行 -kf 本文件（或 -k @本文件）；图形界面点“导入…”。\n";
+    s += "# ============================================================\n";
+    s += std::string("alg=") + algToken(a) + "\n";
+    s += "len=" + std::to_string(key.size()) + "\n";
+    s += "key=" + toHex(key) + "\n";
+    return s;
+}
+
+bool parseKeyText(const std::string& text, std::vector<std::uint8_t>& key, Alg& a, std::string& err) {
+    std::string hex;           // 已收集到的十六进制字符
+    std::size_t declaredBytes = 0;  // 文件里 len= 声明的字节数（0 = 未声明）
+    bool algGiven = false;
+    Alg alg = Alg::TDES3;
+
+    std::size_t pos = 0;
+    if (text.size() >= 3 && (unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB &&
+        (unsigned char)text[2] == 0xBF) {
+        pos = 3;  // 跳过 UTF-8 BOM
+    }
+
+    while (pos <= text.size()) {
+        const std::size_t nl = text.find('\n', pos);
+        const std::string raw = text.substr(pos, (nl == std::string::npos ? text.size() : nl) - pos);
+        pos = (nl == std::string::npos) ? text.size() + 1 : nl + 1;
+
+        const std::string line = trimAscii(raw);
+        if (line.empty() || line[0] == '#' || line[0] == ';' || line[0] == '/') continue;  // 注释
+
+        const std::size_t eq = line.find('=');
+        if (eq != std::string::npos) {
+            const std::string name = lowerAscii(trimAscii(line.substr(0, eq)));
+            const std::string val = trimAscii(line.substr(eq + 1));
+            if (name == "alg" || name == "algorithm" || name == "type") {
+                if (!parseAlgName(val, alg)) {
+                    err = "无法识别的算法名：" + val + "（可用 des / 3des2 / 3des3）";
+                    return false;
+                }
+                algGiven = true;
+            } else if (name == "key" || name == "keyhex" || name == "hex" || name == "secret") {
+                const std::string h = removeSpaces(val);
+                if (h.empty()) continue;  // 空值忽略，允许只写 alg= 的模板文件
+                if (!isHexString(h)) {
+                    err = "key= 后面的内容不是合法的十六进制字符串：" + val;
+                    return false;
+                }
+                hex += h;  // 允许 key= 分行书写，多行会依次拼接
+            } else if (name == "len" || name == "length" || name == "bytes") {
+                declaredBytes = (std::size_t)std::strtoul(val.c_str(), nullptr, 10);
+            } else if (name == "bits") {
+                declaredBytes = (std::size_t)std::strtoul(val.c_str(), nullptr, 10) / 8;
+            }
+            // 其余未知字段一律忽略，保证带自定义注释信息的密钥文件也能导入
+            continue;
+        }
+
+        const std::string h = removeSpaces(line);
+        if (!isHexString(h)) {
+            err = "无法识别的行（既不是“字段=值”，也不是注释或十六进制密钥）：" + line;
+            return false;
+        }
+        hex += h;
+    }
+
+    if (hex.empty()) {
+        err = "密钥文件中没有找到密钥（请在文件里写 key=<十六进制密钥>）";
+        return false;
+    }
+    if (hex.size() % 2 != 0) {
+        err = "密钥的十六进制字符个数为奇数（" + std::to_string(hex.size()) + "），无法构成完整字节";
+        return false;
+    }
+
+    key.clear();
+    key.reserve(hex.size() / 2);
+    for (std::size_t i = 0; i + 1 < hex.size(); i += 2) {
+        const int hi = hexVal(hex[i]);
+        const int lo = hexVal(hex[i + 1]);
+        if (hi < 0 || lo < 0) {
+            err = std::string("密钥中含有非法的十六进制字符：") + hex[i] + hex[i + 1];
+            return false;
+        }
+        key.push_back((std::uint8_t)((hi << 4) | lo));
+    }
+
+    if (algGiven) {
+        if (key.size() != keyBytes(alg)) {
+            err = std::string("密钥文件声明算法为 ") + algName(alg) + "（需要 " +
+                  std::to_string(keyBytes(alg)) + " 字节），但密钥实际有 " + std::to_string(key.size()) +
+                  " 字节";
+            return false;
+        }
+    } else if (!inferAlgByKeyLen(key.size(), alg)) {
+        err = "无法由密钥长度（" + std::to_string(key.size()) +
+              " 字节）推断算法：只支持 8 / 16 / 24 字节；请在文件中写 alg=des|3des2|3des3";
+        return false;
+    }
+
+    if (declaredBytes != 0 && declaredBytes != key.size()) {
+        err = "密钥文件中的 len=" + std::to_string(declaredBytes) + " 与实际密钥长度 " +
+              std::to_string(key.size()) + " 字节不一致";
+        return false;
+    }
+
+    a = alg;
     return true;
 }
 
@@ -279,6 +488,33 @@ static bool writeAll(const std::string& path, const std::vector<std::uint8_t>& d
     if (!data.empty()) f.write(reinterpret_cast<const char*>(data.data()), (std::streamsize)data.size());
     if (!f) {
         err = "写入输出文件失败：" + path;
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------- 密钥文件的读写 ----------------------------
+
+bool writeKeyFile(const std::string& path, Alg a, const std::vector<std::uint8_t>& key, std::string& err) {
+    if (key.size() != keyBytes(a)) {
+        err = std::string("密钥长度（") + std::to_string(key.size()) + " 字节）与算法 " + algName(a) +
+              " 不匹配，无法导出";
+        return false;
+    }
+    const std::string text = makeKeyText(a, key);
+    const std::vector<std::uint8_t> data(text.begin(), text.end());
+    return writeAll(path, data, err);
+}
+
+bool readKeyFile(const std::string& path, std::vector<std::uint8_t>& key, Alg& a, std::string& err) {
+    std::vector<std::uint8_t> buf;
+    if (!readAll(path, buf, err)) {
+        err = "无法读取密钥文件：" + path;
+        return false;
+    }
+    const std::string text(buf.begin(), buf.end());
+    if (!parseKeyText(text, key, a, err)) {
+        err = "密钥文件 " + path + " 解析失败：" + err;
         return false;
     }
     return true;

@@ -13,6 +13,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <random>
 #include <string>
 #include <vector>
@@ -344,6 +345,107 @@ void testWeakKey() {
           "对照组 K=133457799BBCDFF1");
 }
 
+// 密钥文件：导出文本 → 解析回密钥，以及宽容解析与错误检测
+void testKeyFile() {
+    std::string err;
+
+    // ① 三种算法各自“导出 → 解析”往返一致，且导出文本里确实带 key= 行
+    bool roundOk = true;
+    std::string detail;
+    const Alg algs[3] = {Alg::DES, Alg::TDES2, Alg::TDES3};
+    for (Alg a : algs) {
+        std::vector<std::uint8_t> key;
+        randomKey(a, key);
+        const std::string text = makeKeyText(a, key);
+        std::vector<std::uint8_t> back;
+        Alg b = Alg::TDES3;
+        std::string e;
+        if (!parseKeyText(text, back, b, e) || back != key || b != a) {
+            roundOk = false;
+            detail = std::string(algName(a)) + "：" + e;
+            break;
+        }
+        if (text.find("key=" + toHex(key)) == std::string::npos) {
+            roundOk = false;
+            detail = std::string(algName(a)) + " 导出的文本里没有 key= 行";
+            break;
+        }
+    }
+    check(roundOk, "密钥文件：导出→解析 往返一致",
+          roundOk ? "DES / 3DES-2Key / 3DES-3Key 三种算法均一致" : detail);
+
+    // ② 宽容解析：UTF-8 BOM、# 与 ; 注释、空行、大小写、空格与换行分隔、key= 分行书写
+    const std::string messy =
+        "\xEF\xBB\xBF"
+        "# 注释行：算法与密钥可分行书写\n"
+        "; 另一种注释风格\n"
+        "\n"
+        "alg = 3DES3\n"
+        "key = d19f cec9 56c9 d946\n"
+        "      e800 6f04 c310 6fc9\n"
+        "      2600 92ac 091c 9993\n";
+    std::vector<std::uint8_t> mk;
+    Alg ma = Alg::DES;
+    const bool messyOk = parseKeyText(messy, mk, ma, err) && ma == Alg::TDES3 &&
+                         toHex(mk) == "D19FCEC956C9D946E8006F04C3106FC9260092AC091C9993";
+    check(messyOk, "密钥文件：容忍注释/空格/换行/BOM/大小写",
+          messyOk ? "解析出 24 字节密钥，与手写文本完全一致" : err);
+
+    // ③ 没有 key= / alg= 的裸十六进制文件：按长度推断算法
+    std::vector<std::uint8_t> bk;
+    Alg ba = Alg::TDES3;
+    const bool bareOk = parseKeyText("133457799BBCDFF1\n", bk, ba, err) && ba == Alg::DES &&
+                        bk.size() == keyBytes(Alg::DES);
+    check(bareOk, "密钥文件：裸十六进制按长度识别为 DES", bareOk ? "16 个字符 → 8 字节" : err);
+
+    // ④ 各类非法文件必须被拒绝
+    std::vector<std::uint8_t> k;
+    Alg a2 = Alg::TDES3;
+    const bool oddRejected = !parseKeyText("key=ABC\n", k, a2, err);
+    check(oddRejected, "密钥文件：拒绝奇数个十六进制字符", oddRejected ? err : "未检出");
+
+    const bool badCharRejected = !parseKeyText("key=1334577ZZBBCDFF1\n", k, a2, err);
+    check(badCharRejected, "密钥文件：拒绝非十六进制字符", badCharRejected ? err : "未检出");
+
+    const bool mismatchRejected = !parseKeyText("alg=3des3\nkey=133457799BBCDFF1\n", k, a2, err);
+    check(mismatchRejected, "密钥文件：拒绝 alg 与密钥长度不符",
+          mismatchRejected ? err : "未检出");
+
+    const bool unknownLenRejected = !parseKeyText("key=0123456789ABCDEF01234567\n", k, a2, err);
+    check(unknownLenRejected, "密钥文件：拒绝无法推断算法的长度",
+          unknownLenRejected ? err : "未检出");
+
+    const bool emptyRejected = !parseKeyText("# 只有一个注释\n", k, a2, err);
+    check(emptyRejected, "密钥文件：空文件（无密钥）被拒绝", emptyRejected ? err : "未检出");
+
+    // ⑤ 真实文件读写：写盘 → 读回 → 用于加解密
+    const std::string path =
+        (std::filesystem::temp_directory_path() / "tdes_selftest_key.key").string();
+    std::vector<std::uint8_t> wk;
+    randomKey(Alg::TDES3, wk);
+    std::vector<std::uint8_t> rk;
+    Alg ra = Alg::DES;
+    const bool diskOk = writeKeyFile(path, Alg::TDES3, wk, err) && readKeyFile(path, rk, ra, err) &&
+                        rk == wk && ra == Alg::TDES3;
+    check(diskOk, "密钥文件：写入磁盘后读回一致", diskOk ? path : err);
+
+    std::error_code ec;
+    std::filesystem::remove(std::filesystem::u8path(path), ec);
+    std::vector<std::uint8_t> nk;
+    Alg na = Alg::TDES3;
+    const bool missingRejected = !readKeyFile(path, nk, na, err);
+    check(missingRejected, "密钥文件：不存在的文件被拒绝", missingRejected ? err : "未检出");
+
+    // ⑥ 从密钥文件读出的密钥可直接用于本模块的加解密
+    std::vector<std::uint8_t> plain(64);
+    for (std::size_t i = 0; i < plain.size(); ++i) plain[i] = (std::uint8_t)(i * 5 + 1);
+    std::vector<std::uint8_t> buf = plain;
+    const std::uint8_t iv[IV_SIZE] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+    const bool usable = transform(buf, rk, ra, Mode::CBC, iv, true, err) &&
+                        transform(buf, rk, ra, Mode::CBC, iv, false, err) && buf == plain;
+    check(usable, "密钥文件中的密钥可用于加解密", usable ? "往返一致（3DES-3Key/CBC）" : err);
+}
+
 }  // namespace
 
 int selfTest(bool verbose) {
@@ -361,6 +463,7 @@ int selfTest(bool verbose) {
     testSBox();
     testCourseTable();
     testWeakKey();
+    testKeyFile();
     std::printf("-------------------------------------------\n");
     std::printf("用例总数 %d，通过 %d，失败 %d\n", g_pass + g_fail, g_pass, g_fail);
     return g_fail;

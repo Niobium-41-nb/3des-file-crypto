@@ -4,7 +4,7 @@
 #  用法（在 Windows 下用 mingw32-make）:
 #     mingw32-make            编译命令行工具 tdes.exe 与图形界面 tdes_gui.exe
 #     mingw32-make gui        只编译图形界面
-#     mingw32-make test       编译并运行内置自检 + 文件级测试
+#     mingw32-make test       编译并运行内置自检 + 文件级测试 + 密钥文件测试
 #     mingw32-make gui-test   运行图形界面端到端测试
 #     mingw32-make clean      清理编译产物
 #
@@ -21,7 +21,7 @@ HEADERS  := include/des.h include/tdes.h
 RES      := assets/app_res.o
 RESDEP   := assets/app.rc assets/icon.ico
 
-.PHONY: all gui test gui-test icon clean
+.PHONY: all gui test key-test gui-test icon clean
 
 all: tdes.exe tdes_gui.exe
 
@@ -45,6 +45,11 @@ test_kat.exe: tests/test_kat.cpp $(CORE) $(HEADERS)
 test: tdes.exe test_kat.exe
 	./tdes.exe selftest
 	./test_kat.exe
+	powershell -NoProfile -ExecutionPolicy Bypass -File tools/keytest.ps1
+
+# 密钥文件导入 / 导出的命令行端到端测试（genkey --out、-kf、keyexport、keyinfo）
+key-test: tdes.exe
+	powershell -NoProfile -ExecutionPolicy Bypass -File tools/keytest.ps1
 
 # 图形界面端到端测试（脚本驱动控件，无需手工点击）
 gui-test: tdes_gui.exe

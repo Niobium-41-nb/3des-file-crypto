@@ -28,6 +28,7 @@ if (-not (Test-Path $exe)) { throw "tdes_gui.exe not found: $exe (build it first
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @"
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 public class GuiDrv {
@@ -44,6 +45,8 @@ public class GuiDrv {
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr lp);
+    [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h, EnumProc cb, IntPtr lp);
+    [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr h);
     [DllImport("user32.dll", EntryPoint="GetClassNameW", CharSet=CharSet.Unicode)]
     public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
     public delegate bool EnumProc(IntPtr h, IntPtr lp);
@@ -70,6 +73,73 @@ public class GuiDrv {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+
+    // The common file dialog is a visible #32770 owned by our process that hosts the
+    // shell view (SHELLDLL_DefView). The app's own parameter dialogs use IDs in the
+    // 4000 range and have no shell view, so there is no ambiguity.
+    public static IntPtr FindOwnFileDialog(uint wantPid) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr h, IntPtr lp) {
+            if (!IsWindowVisible(h)) return true;
+            uint p; GetWindowThreadProcessId(h, out p);
+            if (p != wantPid) return true;
+            var cn = new StringBuilder(64);
+            GetClassName(h, cn, 64);
+            if (cn.ToString() != "#32770") return true;
+            if (GetDlgItem(h, 4006) != IntPtr.Zero) return true;   // encrypt dialog
+            if (GetDlgItem(h, 4103) != IntPtr.Zero) return true;   // decrypt dialog
+            if (FindChildByClass(h, "SHELLDLL_DefView") == IntPtr.Zero) return true;
+            found = h;
+            return false;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    // First descendant of the given class (depth-first order as reported by the OS).
+    public static IntPtr FindChildByClass(IntPtr h, string cls) {
+        IntPtr found = IntPtr.Zero;
+        EnumChildWindows(h, delegate(IntPtr c, IntPtr lp) {
+            if (found != IntPtr.Zero) return true;
+            var sb = new StringBuilder(128); GetClassName(c, sb, 128);
+            if (sb.ToString().IndexOf(cls, StringComparison.OrdinalIgnoreCase) >= 0) found = c;
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    // The "File name" edit of the common dialog (id 1001 / edt1); fall back to the
+    // first Edit control found.
+    public static IntPtr FindFileNameEdit(IntPtr h) {
+        IntPtr[] all = FindEdits(h);
+        return all.Length > 0 ? all[0] : IntPtr.Zero;
+    }
+
+    // The "File name" edit differs between common-dialog styles (id 1148 with the
+    // modern shell view, 1001 or 0 for others), so return every Edit candidate with
+    // the known file-name ids first.
+    public static IntPtr[] FindEdits(IntPtr h) {
+        var all = new List<IntPtr>();
+        EnumChildWindows(h, delegate(IntPtr c, IntPtr lp) {
+            var sb = new StringBuilder(128); GetClassName(c, sb, 128);
+            if (sb.ToString() == "Edit") all.Add(c);
+            return true;
+        }, IntPtr.Zero);
+        var ordered = new List<IntPtr>();
+        foreach (int id in new int[] { 1148, 1001 }) {
+            foreach (IntPtr c in all) if (GetDlgCtrlID(c) == id) ordered.Add(c);
+        }
+        foreach (IntPtr c in all) if (!ordered.Contains(c)) ordered.Add(c);
+        return ordered.ToArray();
+    }
+
+    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+
+    public static bool SetDlgItemText(IntPtr h, int id, string s) {
+        IntPtr c = GetDlgItem(h, id);
+        if (c == IntPtr.Zero) return false;
+        SendText(c, 0x000C, IntPtr.Zero, s);   // WM_SETTEXT
+        return true;
+    }
 }
 "@
 
@@ -100,9 +170,15 @@ $IDM_TOOLS_INFO = 3012
 $IDC_ENC_OUT = 4001
 $IDC_ENC_ALG = 4003
 $IDC_ENC_KEY = 4006
+$IDC_ENC_HINT = 4008
+$IDC_ENC_KEY_IMPORT = 4012
+$IDC_ENC_KEY_EXPORT = 4013
 $IDOK        = 1
 $IDC_DEC_OUT = 4101
 $IDC_DEC_KEY = 4103
+$IDC_DEC_HINT = 4104
+$IDC_DEC_KEY_IMPORT = 4108
+$IDC_DEC_KEY_EXPORT = 4109
 $IDC_TXT_EDIT = 4201
 
 $shotDir = Join-Path $env:TEMP 'tdes_gui_shots'
@@ -151,6 +227,32 @@ function WaitUntil([scriptblock]$cond, [int]$loops = 40, [int]$ms = 150) {
     for ($i = 0; $i -lt $loops; $i++) {
         if (& $cond) { return $true }
         Start-Sleep -Milliseconds $ms
+    }
+    return $false
+}
+
+function WaitFileDialog([int]$loops = 40) {
+    for ($i = 0; $i -lt $loops; $i++) {
+        $d = [GuiDrv]::FindOwnFileDialog($script:appPid)
+        if ($d -ne [IntPtr]::Zero) { return $d }
+        Start-Sleep -Milliseconds 120
+    }
+    return [IntPtr]::Zero
+}
+
+# Type the target path into the file name field of the common file dialog and press
+# its OK button ("Open" / "Save"), so key-file import/export can be driven headless.
+# The file-name edit ID varies with the dialog style, so each candidate is tried
+# until the dialog closes.
+function CompleteFileDialog([IntPtr]$d, [string]$path) {
+    foreach ($edit in [GuiDrv]::FindEdits($d)) {
+        [GuiDrv]::SendText($edit, $WM_SETTEXT, [IntPtr]::Zero, $path) | Out-Null
+        Start-Sleep -Milliseconds 250
+        $btn = [GuiDrv]::GetDlgItem($d, $IDOK)
+        if ($btn -eq [IntPtr]::Zero) { return $false }
+        [GuiDrv]::PostMessage($btn, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+        Start-Sleep -Milliseconds 700
+        if (-not [GuiDrv]::IsWindow($d)) { return $true }
     }
     return $false
 }
@@ -357,7 +459,86 @@ if ($dlg -ne [IntPtr]::Zero) {
 }
 DismissDialogs | Out-Null
 
-# ------------- 8) main window capture -------------
+# ------------- 8) key file export / import driven from the encrypt dialog -------------
+$keyFile = Join-Path $dir 'gui_key.key'
+[GuiDrv]::SendText($hAddr, $WM_SETTEXT, [IntPtr]::Zero, $plain) | Out-Null
+[GuiDrv]::Send($h, $WM_COMMAND, [IntPtr](($CBN_EDITCHANGE -shl 16) -bor $IDC_ADDR), [IntPtr]::Zero) | Out-Null
+Start-Sleep -Milliseconds 400
+[GuiDrv]::PostMessage($h, $WM_COMMAND, [IntPtr]$IDM_FILE_ENC, [IntPtr]::Zero) | Out-Null
+$dlg = WaitDialog
+if ($dlg -ne [IntPtr]::Zero) {
+    $hKey = [GuiDrv]::GetDlgItem($dlg, $IDC_ENC_KEY)
+    $hImp = [GuiDrv]::GetDlgItem($dlg, $IDC_ENC_KEY_IMPORT)
+    $hExp = [GuiDrv]::GetDlgItem($dlg, $IDC_ENC_KEY_EXPORT)
+    Check (($hImp -ne [IntPtr]::Zero) -and ($hExp -ne [IntPtr]::Zero)) `
+        "encrypt dialog has key import/export buttons" "IDs 4012 / 4013"
+
+    # --- export the typed key to a .key file ---
+    [GuiDrv]::SendText($hKey, $WM_SETTEXT, [IntPtr]::Zero, $key) | Out-Null
+    Start-Sleep -Milliseconds 200
+    [GuiDrv]::PostMessage($hExp, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+    $fd = WaitFileDialog
+    Check ($fd -ne [IntPtr]::Zero) "export button opens a save dialog" "common file dialog"
+    if ($fd -ne [IntPtr]::Zero) { CompleteFileDialog $fd $keyFile | Out-Null }
+    $saved = WaitUntil { Test-Path $keyFile }
+    Check $saved "key exported to file" $(if ($saved) { Split-Path -Leaf $keyFile } else { "not created" })
+    if ($saved) {
+        $txt = [System.IO.File]::ReadAllText($keyFile)
+        Check ([regex]::IsMatch($txt, '(?m)^key=' + $key + '\s*$')) `
+            "exported key file holds the key" "key= line matches"
+    }
+
+    # --- clear the field, then import the same file back ---
+    # NOTE: the key field is a password edit, so another process cannot read its
+    # text back (GetWindowText returns "").  The import is therefore verified by
+    # the hint label plus a real encryption with the imported key below.
+    $importOut = Join-Path $dir 'imported_key_check.3des'
+    [GuiDrv]::SendText($hKey, $WM_SETTEXT, [IntPtr]::Zero, '') | Out-Null
+    Start-Sleep -Milliseconds 150
+    [GuiDrv]::PostMessage($hImp, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+    $fd = WaitFileDialog
+    Check ($fd -ne [IntPtr]::Zero) "import button opens an open dialog" "common file dialog"
+    if ($fd -ne [IntPtr]::Zero) { CompleteFileDialog $fd $keyFile | Out-Null }
+    $hint = [GuiDrv]::GetDlgItem($dlg, $IDC_ENC_HINT)
+    $hinted = WaitUntil { (ReadText $hint) -match 'gui_key' }
+    Check $hinted "import reports the imported key file" $(if ($hinted) { (ReadText $hint) } else { "hint: $(ReadText $hint)" })
+
+    # --- the imported key must be accepted by the dialog: OK closes it and encrypts ---
+    "encrypt+key dialog shot : " + (Shot $dlg 'dialog_encrypt_keyfile')
+    [GuiDrv]::SendText([GuiDrv]::GetDlgItem($dlg, $IDC_ENC_OUT), $WM_SETTEXT, [IntPtr]::Zero, $importOut) | Out-Null
+    Start-Sleep -Milliseconds 200
+    [GuiDrv]::PostMessage([GuiDrv]::GetDlgItem($dlg, $IDOK), $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+    $okImp = WaitUntil { Test-Path $importOut }
+    DismissDialogs | Out-Null
+    Check ($okImp -and ((Get-Item $importOut).Length -eq $expectLen)) `
+        "imported key really encrypts the file" `
+        $(if ($okImp) { "$((Get-Item $importOut).Length) bytes" } else { "no output (key was rejected?)" })
+} else {
+    Check $false "encrypt dialog has key import/export buttons" "encrypt dialog not found"
+}
+DismissDialogs | Out-Null
+
+# the decrypt dialog carries the same two buttons
+[GuiDrv]::PostMessage($h, $WM_COMMAND, [IntPtr]$IDM_FILE_DEC, [IntPtr]::Zero) | Out-Null
+$dlg = WaitDialog
+if ($dlg -ne [IntPtr]::Zero) {
+    Check (([GuiDrv]::GetDlgItem($dlg, $IDC_DEC_KEY_IMPORT) -ne [IntPtr]::Zero) -and
+           ([GuiDrv]::GetDlgItem($dlg, $IDC_DEC_KEY_EXPORT) -ne [IntPtr]::Zero)) `
+        "decrypt dialog has key import/export buttons" "IDs 4108 / 4109"
+    # import a key file into the decrypt dialog as well (hint proves it was read)
+    [GuiDrv]::PostMessage([GuiDrv]::GetDlgItem($dlg, $IDC_DEC_KEY_IMPORT), $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+    $fd = WaitFileDialog
+    if ($fd -ne [IntPtr]::Zero) { CompleteFileDialog $fd $keyFile | Out-Null }
+    $hint = [GuiDrv]::GetDlgItem($dlg, $IDC_DEC_HINT)
+    $hinted = WaitUntil { (ReadText $hint) -match 'gui_key' }
+    Check $hinted "decrypt dialog imports a key file" $(if ($hinted) { (ReadText $hint) } else { "hint: $(ReadText $hint)" })
+    "decrypt+key dialog shot : " + (Shot $dlg 'dialog_decrypt_keyfile')
+} else {
+    Check $false "decrypt dialog has key import/export buttons" "decrypt dialog not found"
+}
+DismissDialogs | Out-Null
+
+# ------------- 9) main window capture -------------
 Start-Sleep -Milliseconds 400
 "main window shot    : " + (Shot $h 'window_main')
 

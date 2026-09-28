@@ -77,6 +77,23 @@ bool parseKeyHex(const std::string& hex, Alg a, std::vector<std::uint8_t>& key, 
 bool randomKey(Alg a, std::vector<std::uint8_t>& key);
 bool randomIV(std::uint8_t iv[IV_SIZE]);
 
+// ------------------------------ 密钥文件 ------------------------------
+// 密钥除了用命令行 / 输入框直接键入十六进制外，还可以“导出”成文本文件保存或传递，
+// 之后再从该文件“导入”。文件是 UTF-8 文本，允许空行与 # 或 ; 开头的注释，形如：
+//     # 3DES 文件加解密工具 —— 密钥文件
+//     alg=3des3
+//     len=24
+//     key=D19FCEC956C9D946E8006F04C3106FC9260092AC091C9993
+// 解析十分宽容：大小写随意、可用空格/换行分隔、可省略 key= 标记（此时文件中第一段
+// 十六进制串即视为密钥）、可省略 alg=（此时按十六进制长度推断 DES/3DES-2Key/3DES-3Key）。
+bool parseAlgName(const std::string& name, Alg& a);   // "des" / "3des2" / "3des3"（大小写不敏感）
+
+std::string makeKeyText(Alg a, const std::vector<std::uint8_t>& key);  // 生成密钥文件内容
+bool parseKeyText(const std::string& text, std::vector<std::uint8_t>& key, Alg& a, std::string& err);
+
+bool writeKeyFile(const std::string& path, Alg a, const std::vector<std::uint8_t>& key, std::string& err);
+bool readKeyFile(const std::string& path, std::vector<std::uint8_t>& key, Alg& a, std::string& err);
+
 // ---------------------------- 填充与分组运算 ----------------------------
 void pkcs7Pad(std::vector<std::uint8_t>& data, std::size_t blockSize);
 bool pkcs7Unpad(std::vector<std::uint8_t>& data, std::size_t blockSize);
